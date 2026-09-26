@@ -5,6 +5,8 @@
     retroport deps <m2>                              list a model's .skel/.anim/.bone deps
     retroport reinline <m2> --out <dir> [--json]     re-inline a .skel model (Milestones A+B)
     retroport check <md20> [--json]                  WotLK render-blocker diagnostics on converted output
+    retroport bake <md20> --slot N=path [--json]     bake in-game texture paths into type-0 slots
+    retroport register --dbc-dir --out --path        add CreatureModelData/DisplayInfo rows + SQL
 
 Designed to run today against any folder. Point it at a wow.export extraction
 to get a real asset inventory and a list of what still needs conversion.
@@ -372,6 +374,123 @@ def report(
     for p in written:
         console.print(f"  {p}")
     console.print(f"\nCombined report: [bold]{written[0]}[/]")
+
+
+def _parse_slots(slot: list[str]) -> dict[int, str]:
+    out: dict[int, str] = {}
+    for s in slot or []:
+        idx, sep, path = s.partition("=")
+        if not sep or not idx.strip().isdigit():
+            raise typer.BadParameter(f"--slot expects N=In\\Game\\Path.blp, got '{s}'")
+        out[int(idx)] = path.strip()
+    return out
+
+
+@app.command()
+def bake(
+    model: str = typer.Argument(..., help="A converted (MD20) .m2."),
+    slot: list[str] = typer.Option(None, "--slot", help="N=In\\Game\\path.blp (repeatable); explicit paths win."),
+    source_m2: str = typer.Option("", "--source-m2", help="The modern (MD21) .m2 it was converted from, for TXID auto-fill."),
+    listfile: str = typer.Option("", "--listfile", help="Community listfile.csv, to resolve TXID FileDataIDs."),
+    overrides: str = typer.Option("", "--overrides", help="Manual fdid;path fixes (win over the listfile)."),
+    out: str = typer.Option("", "--out", help="Output folder (default: <model folder>/baked). Never the model's own folder."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the JSON result envelope to stdout."),
+) -> None:
+    """Bake in-game texture paths into type-0 slots (auto-fill from TXID + listfile, and/or explicit)."""
+    from .convert import texbake
+    from .models import ConversionResult, Finding, ValidationReport
+    from .safeio import same_dir
+
+    def fail(msg: str, code: int = 2):
+        if json_out:
+            _emit_json("bake", False, None, msg)
+        else:
+            console.print(f"[red]{msg}[/]")
+        raise typer.Exit(code=code)
+
+    if not os.path.isfile(model):
+        fail(f"model not found: {model}")
+    out_dir = out or os.path.join(os.path.dirname(os.path.abspath(model)), "baked")
+    if os.path.isdir(out_dir) and same_dir(out_dir, os.path.dirname(os.path.abspath(model))):
+        fail("--out is the model's own folder; pick another so the input is never overwritten")
+    with open(model, "rb") as fh:
+        data = fh.read()
+    if data[:4] != b"MD20":
+        fail("texture baking needs an MD20 (converted) model; run MultiConverter first")
+
+    txid = texbake.read_txid(source_m2) if source_m2 else []
+    known = texbake.resolve_fdids(texbake.empty_slot_fdids(data, txid), listfile or None, overrides or None)
+    plan = texbake.plan_bake(data, txid, known, _parse_slots(slot))
+    findings = [Finding(check="unresolved", severity=Severity.WARN,
+                        detail=f"slot {s}: FileDataID {f} not in the listfile") for s, f in plan.unresolved]
+    findings += [Finding(check="no_txid", severity=Severity.WARN,
+                         detail=f"slot {s}: empty type-0 slot with no TXID entry; pass --slot {s}=...")
+                 for s in plan.no_id]
+    if not plan.paths:
+        fail("nothing to bake - pass --slot N=path, or --source-m2 + --listfile to auto-fill", code=1)
+
+    out_path = os.path.join(out_dir, os.path.basename(model))
+    try:
+        texbake.bake_file(model, plan.paths, out_path)
+    except ValueError as exc:
+        fail(str(exc), code=1)
+    findings = [Finding(check="baked", severity=Severity.PASS, detail=f"slot {s} -> {p}")
+                for s, p in sorted(plan.paths.items())] + findings
+    cr = ConversionResult(source=model, output=out_path, stage="texbake", success=True,
+                          report=ValidationReport(asset=out_path, findings=findings))
+    if json_out:
+        _emit_json("bake", True, cr)
+        raise typer.Exit(code=0)
+    console.print(f"[green]Baked[/] {len(plan.paths)} slot(s) -> {out_path}")
+    for f in findings:
+        console.print(f"  [{_SEV_STYLE[f.severity]}]{f.severity.value:4}[/] {f.detail}")
+
+
+@app.command()
+def register(
+    dbc_dir: str = typer.Option(..., "--dbc-dir", help="Folder with the extracted 3.3.5a CreatureModelData/DisplayInfo.dbc."),
+    out: str = typer.Option(..., "--out", help="Folder for the patched DBCs (must differ from --dbc-dir)."),
+    path: str = typer.Option(..., "--path", help="In-game model path, e.g. Creature\\Foo\\foo.m2."),
+    m2: str = typer.Option("", "--m2", help="The converted .m2, to fill CreatureModelData's GeoBox from its bounds."),
+    scale: float = typer.Option(1.0, "--scale"),
+    display_floor: int = typer.Option(0, "--display-floor", help="First DisplayID to try (0 = max+1)."),
+    model_floor: int = typer.Option(0, "--model-floor", help="First ModelData ID to try (0 = max+1)."),
+    texvar: str = typer.Option("", "--texvar", help="TextureVariation1,2,3 as bare names (for type 11/12/13 slots)."),
+    geoset: int = typer.Option(0, "--geoset", help="CreatureGeosetData."),
+    entries: str = typer.Option("", "--entries", help="Creature entries to repoint (comma-separated) - adds the full SQL block."),
+    search: str = typer.Option("", "--search", help="Creature name to include a name-search query for."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the JSON result envelope to stdout."),
+) -> None:
+    """Append CreatureModelData + CreatureDisplayInfo rows for a converted model, and print the SQL."""
+    from .dbc import register_creature_model
+    from .formats.md20 import read_bounds
+    from .formats.verify import m2_data_block
+    from .sql import SQLInputError
+
+    tv = [t.strip() for t in texvar.split(",")] if texvar else []
+    tv = (tv + ["", "", ""])[:3]
+    bounds = None
+    try:
+        if m2:
+            with open(m2, "rb") as fh:
+                bounds = read_bounds(m2_data_block(fh.read()))
+        r = register_creature_model(dbc_dir, out, path, scale,
+                                    display_floor=display_floor or None, modeldata_floor=model_floor or None,
+                                    texture_variations=tuple(tv), geoset_data=geoset, bounds=bounds,
+                                    creature_entries=entries, search_term=search)
+    except (OSError, ValueError, SQLInputError) as exc:
+        if json_out:
+            _emit_json("register", False, None, str(exc))
+        else:
+            console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    if json_out:
+        _emit_json("register", True, r)
+        raise typer.Exit(code=0)
+    console.print(f"[green]DisplayID {r.display_id}[/] -> ModelData {r.model_id} -> {r.model_name}")
+    console.print(f"  {r.model_dbc}\n  {r.display_dbc}")
+    console.print("[dim]Put BOTH DBCs in the client patch (DBFilesClient\\) AND the server's dbc\\ folder.[/]\n")
+    console.print(r.sql, markup=False, highlight=False)
 
 
 def main() -> None:

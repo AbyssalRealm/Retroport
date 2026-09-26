@@ -119,3 +119,79 @@ def test_check_flags_poly_and_submesh_ceilings(tmp_path):
     checks = {f.check: f.severity.value for f in res.report().findings}
     assert checks.get("triangle_limit") == "fail"
     assert checks.get("submesh_limit") == "warn"
+
+
+# --- merged from Conjure: LOD gate, animation table, version high bits ---
+
+def _skin_with_lookup(indices):
+    """A .skin whose vertex lookup (local -> global) is ``indices``."""
+    look_off = 0x30
+    s = bytearray(look_off + 2 * len(indices))
+    s[0:4] = b"SKIN"
+    _m2a(s, S.SKIN_VERTICES, len(indices), look_off)
+    struct.pack_into(f"<{len(indices)}H", s, look_off, *indices)
+    return bytes(s)
+
+
+def _md20_with(n_vertices=0, sequences=(), version=264):
+    """MD20 with a vertex count and [(anim_id, sub_id, flags)] sequences."""
+    b = bytearray(0x138)
+    b[0:4] = b"MD20"
+    struct.pack_into("<I", b, S.MD20_VERSION, version)
+    struct.pack_into("<I", b, S.HDR_NUM_SKIN_PROFILES, 1)
+    _m2a(b, S.HDR_VERTICES, n_vertices, 0)
+    seq_off = len(b)
+    for anim_id, sub_id, flags in sequences:
+        rec = bytearray(S.M2SEQUENCE)
+        struct.pack_into("<HH", rec, 0, anim_id, sub_id)
+        struct.pack_into("<I", rec, S.M2SEQUENCE_FLAGS, flags)
+        b += rec
+    _m2a(b, S.HDR_SEQUENCES, len(sequences), seq_off)
+    return bytes(b)
+
+
+def _sev(res, check):
+    return {f.check: f.severity.value for f in res.report().findings}.get(check)
+
+
+def test_check_flags_unmerged_lod(tmp_path):
+    (tmp_path / "m.m2").write_bytes(_md20_with(n_vertices=1000))
+    (tmp_path / "m00.skin").write_bytes(_skin_with_lookup([0, 5, 199]))   # spans 200 of 1000
+    res = check_model(str(tmp_path / "m.m2"))
+    assert res.skins[0].vertex_span == 200
+    assert _sev(res, "lod_unmerged") == "fail"
+
+    (tmp_path / "m00.skin").write_bytes(_skin_with_lookup([0, 999]))      # spans all 1000
+    assert _sev(check_model(str(tmp_path / "m.m2")), "lod_unmerged") is None
+
+
+def test_check_lod_gate_ignores_unconverted_md21(tmp_path):
+    block = _md20_with(n_vertices=1000)
+    (tmp_path / "m.m2").write_bytes(b"MD21" + struct.pack("<I", len(block)) + block)
+    (tmp_path / "m00.skin").write_bytes(_skin_with_lookup([0, 199]))
+    assert _sev(check_model(str(tmp_path / "m.m2")), "lod_unmerged") is None
+
+
+def test_check_classifies_animations_and_missing_files(tmp_path):
+    seqs = [(0, 0, 0x20), (4, 0, 0x40), (5, 0, 0), (5, 1, 0)]   # inline, alias, 2 external
+    (tmp_path / "m.m2").write_bytes(_md20_with(sequences=seqs))
+    (tmp_path / "m00.skin").write_bytes(_skin_with_lookup([0]))
+    (tmp_path / "m0005-00.anim").write_bytes(b"\x00" * 16)       # raw (WotLK) anim present
+    res = check_model(str(tmp_path / "m.m2"))
+    assert res.anim_inline == 1 and res.anim_alias == ["0004-00"]
+    assert res.anim_external == ["0005-00", "0005-01"]
+    missing = next(f for f in res.report().findings if f.check == "anim_missing")
+    assert missing.severity.value == "fail" and "0005-01" in missing.detail
+
+    (tmp_path / "m0005-01.anim").write_bytes(b"AFM2" + b"\x00" * 12)   # modern chunked anim
+    res = check_model(str(tmp_path / "m.m2"))
+    assert _sev(res, "anim_missing") is None
+    assert _sev(res, "anim_format") == "warn" and _sev(res, "animations") == "warn"
+
+
+def test_check_version_high_bits(tmp_path):
+    (tmp_path / "m.m2").write_bytes(_md20_with(version=0x00010108))
+    (tmp_path / "m00.skin").write_bytes(_skin_with_lookup([0]))
+    res = check_model(str(tmp_path / "m.m2"))
+    v = next(f for f in res.report().findings if f.check == "version")
+    assert "high bits" in v.detail

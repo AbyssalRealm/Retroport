@@ -9,6 +9,10 @@ These operate on files on disk and are pure-Python (no external tools):
 * ``clear_stale_anim_flags`` - after full re-inlining there are no .anim files, so
   the header's chunked-anim flags (0x2000 / 0x200000) are stale; clear them.
 * ``set_num_skin_profiles`` - set the M2's nViews to match the skins you shipped.
+
+Every write goes through ``safeio.write_verified``: the edited bytes land in a
+temp file, are checked for structural problems the input didn't already have,
+and only then replace the file. A rejected edit leaves the file untouched.
 """
 
 from __future__ import annotations
@@ -17,6 +21,16 @@ import os
 import struct
 
 from ..formats import structs as S
+from ..formats.verify import m2_problems, no_new_problems, skin_problems
+from ..safeio import write_verified
+
+
+def _save_m2(path: str, before: bytes, after: bytes) -> None:
+    write_verified(path, after, no_new_problems(before, m2_problems))
+
+
+def _save_skin(path: str, before: bytes, after: bytes) -> None:
+    write_verified(path, after, no_new_problems(before, skin_problems))
 
 
 def _data_block_bounds(data: bytes) -> tuple[int, int]:
@@ -39,9 +53,9 @@ def clear_stale_anim_flags(m2_path: str) -> bool:
     new = flags & ~(S.FLAG_CHUNKED_ANIM_0x2000 | S.FLAG_UPGRADED_ANIM_0x200000)
     if new == flags:
         return False
+    before = bytes(data)
     struct.pack_into("<I", data, off, new)
-    with open(m2_path, "wb") as fh:
-        fh.write(data)
+    _save_m2(m2_path, before, bytes(data))
     return True
 
 
@@ -49,10 +63,10 @@ def set_num_skin_profiles(m2_path: str, n: int) -> None:
     """Set the M2 header's nViews (skin profile count)."""
     with open(m2_path, "rb") as fh:
         data = bytearray(fh.read())
+    before = bytes(data)
     start, _ = _data_block_bounds(data)
     struct.pack_into("<I", data, start + S.HDR_NUM_SKIN_PROFILES, n)
-    with open(m2_path, "wb") as fh:
-        fh.write(data)
+    _save_m2(m2_path, before, bytes(data))
 
 
 def clamp_skin_submeshes(skin_path: str, max_submeshes: int = 59) -> int:
@@ -70,6 +84,7 @@ def clamp_skin_submeshes(skin_path: str, max_submeshes: int = 59) -> int:
     sub_cnt, _sub_off = S.read_m2array(data, S.SKIN_SUBMESHES)
     if sub_cnt <= max_submeshes:
         return sub_cnt
+    before = bytes(data)
 
     # keep the first N submeshes
     S.write_m2array(data, S.SKIN_SUBMESHES, max_submeshes, _sub_off)
@@ -90,8 +105,7 @@ def clamp_skin_submeshes(skin_path: str, max_submeshes: int = 59) -> int:
     data[bat_off:bat_off + len(kept)] = kept
     S.write_m2array(data, S.SKIN_BATCHES, kept_n, bat_off)
 
-    with open(skin_path, "wb") as fh:
-        fh.write(data)
+    _save_skin(skin_path, before, bytes(data))
     return max_submeshes
 
 
@@ -111,9 +125,9 @@ def clear_combiner_combos(m2_path: str, skin_paths: list[str]) -> tuple[bool, in
     flags = struct.unpack_from("<I", data, off)[0]
     flag_cleared = bool(flags & S.FLAG_USE_COMBINER_COMBOS)
     if flag_cleared:
+        before = bytes(data)
         struct.pack_into("<I", data, off, flags & ~S.FLAG_USE_COMBINER_COMBOS)
-        with open(m2_path, "wb") as fh:
-            fh.write(data)
+        _save_m2(m2_path, before, bytes(data))
 
     changed = 0
     for sp in skin_paths:
@@ -124,6 +138,7 @@ def clear_combiner_combos(m2_path: str, skin_paths: list[str]) -> tuple[bool, in
             continue
         if sdata[:4] != S.SKIN_MAGIC:
             continue
+        s_before = bytes(sdata)
         b_cnt, b_off = S.read_m2array(sdata, S.SKIN_BATCHES)
         dirty = False
         for i in range(b_cnt):
@@ -142,6 +157,5 @@ def clear_combiner_combos(m2_path: str, skin_paths: list[str]) -> tuple[bool, in
                 changed += 1
                 dirty = True
         if dirty:
-            with open(sp, "wb") as fh:
-                fh.write(sdata)
+            _save_skin(sp, s_before, bytes(sdata))
     return flag_cleared, changed

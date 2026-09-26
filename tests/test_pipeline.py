@@ -159,3 +159,49 @@ def test_pipeline_convert_skipped_without_tool(tmp_path):
     convert = _stage(result, "convert")
     assert convert.skipped and not convert.ok
     assert result.ok                                      # a skipped stage doesn't fail the run
+
+
+def test_pipeline_refuses_to_write_into_the_models_folder(tmp_path):
+    model = _setup_skel_model(tmp_path)
+    cfg = PipelineConfig(model=model, out_dir=os.path.dirname(model), do_convert=False, do_check=False)
+    result = Pipeline(cfg, on_log=lambda m: None).run()
+    assert not result.ok and not _stage(result, "triage").ok
+    assert "own folder" in _stage(result, "triage").detail
+
+
+def test_pipeline_texbake_fills_empty_slots_from_txid(tmp_path, monkeypatch):
+    from test_texbake import build_md20_textures, build_md21_with_txid
+    from retroport.formats.md20 import read_texture_slots
+
+    src = tmp_path / "src"; src.mkdir()
+    (src / "sword.m2").write_bytes(build_md21_with_txid([111, 0, 404]))
+    listfile = tmp_path / "listfile.csv"
+    listfile.write_text("111;item/objectcomponents/weapon/sword.blp\n")
+
+    def fake_mc(exe, m2_path, extra_args=None, work_dir=None, expect_growth=False):
+        with open(m2_path, "wb") as fh:          # "converted": three type-0 slots, all empty
+            fh.write(build_md20_textures([(0, ""), (1, ""), (0, "")]))
+        return ToolResult(ok=True)
+    monkeypatch.setattr("retroport.pipeline.run_multiconverter", fake_mc)
+
+    logs = []
+    out = tmp_path / "out"
+    cfg = PipelineConfig(model=str(src / "sword.m2"), out_dir=str(out), do_check=False,
+                         tools={"multiconverter": "C:/fake/MC.exe", "listfile": str(listfile)})
+    result = Pipeline(cfg, on_log=logs.append).run()
+
+    tb = _stage(result, "texbake")
+    assert tb.ok and not tb.skipped and "baked 1" in tb.detail and "1 unresolved" in tb.detail
+    slots = read_texture_slots((out / "sword.m2").read_bytes())
+    assert slots[0].name == r"item\objectcomponents\weapon\sword.blp"
+    assert slots[2].name == ""                                       # fdid 404 unknown
+    assert any("404 not in the listfile" in m for m in logs)
+    assert (out / "_backup" / "sword.m2").exists()                   # pre-edit copy kept
+
+
+def test_pipeline_texbake_skips_unconverted_model(tmp_path):
+    model = _setup_skel_model(tmp_path)
+    cfg = PipelineConfig(model=model, out_dir=str(tmp_path / "out"), do_convert=False, do_check=False)
+    result = Pipeline(cfg, on_log=lambda m: None).run()
+    tb = _stage(result, "texbake")
+    assert tb.skipped and result.ok

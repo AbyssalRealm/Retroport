@@ -9,7 +9,12 @@ Stages (each can be toggled):
     reinline  -> fold .skel/.anim into the M2 (library)          [.skel models]
     convert   -> MultiConverter MD21->MD20 (external exe)
     fixup     -> clear stale anim flags, clamp submeshes, set nViews
+    texbake   -> bake texture paths into empty type-0 slots (library)
     check     -> WotLK render-blocker diagnostics (library)
+
+Safety (from Conjure): the input model's folder is never written to, every
+library edit is verified before it replaces a file, and the converted model +
+skins are copied to <out>/_backup before fixup/texbake touch them.
 """
 
 from __future__ import annotations
@@ -27,6 +32,9 @@ from .convert.loaders import make_manifest_loader, make_file_id_loader, find_man
 from .convert.multiconverter import run_multiconverter
 from .convert.m2mod import reduce_model, txid_remove
 from .convert import fixup as fixup_mod
+from .convert import texbake
+from .formats.verify import VerifyError
+from .safeio import backup_files, same_dir
 from .check import check_model, CheckResult, analyze_skin
 
 
@@ -50,6 +58,8 @@ class PipelineConfig:
     expected_skins: int | None = None   # set nViews to this if given
     multiconverter_args: list[str] = field(default_factory=list)   # just the path by default; add -fixhelm etc. if needed
     fix_combiner: bool = True            # clear the combiner-combos flag (black-mesh fix)
+    do_texbake: bool = True              # bake listfile paths into empty type-0 texture slots
+    texture_paths: dict[int, str] = field(default_factory=dict)   # explicit slot -> in-game .blp path (wins)
 
 
 @dataclass
@@ -87,6 +97,12 @@ class Pipeline:
     def run(self) -> PipelineResult:
         cfg = self.cfg
         res = PipelineResult()
+        model_dir = os.path.dirname(os.path.abspath(cfg.model))
+        if os.path.isdir(cfg.out_dir) and same_dir(cfg.out_dir, model_dir):
+            res.add(StageResult("triage", False, "output folder is the model's own folder - pick a "
+                                "separate folder so the source files are never overwritten"))
+            self._log("Refusing to run: the output folder is the input model's folder.")
+            return res
         os.makedirs(cfg.out_dir, exist_ok=True)
 
         # --- triage ---
@@ -186,6 +202,9 @@ class Pipeline:
             reason = "no .skel" if not info.uses_skel else "disabled"
             res.add(StageResult("reinline", True, f"skipped ({reason})", skipped=True))
 
+        # TXID (texture FileDataIDs) is gone after MD21->MD20, so read it now for texbake.
+        txid = texbake.read_txid(working_m2) or texbake.read_txid(cfg.model)
+
         # --- convert (MultiConverter) ---
         if cfg.do_convert:
             exe = cfg.tools.get("multiconverter")
@@ -220,12 +239,26 @@ class Pipeline:
                 else:
                     res.add(StageResult("convert", True, f"converted to MD20 (v{post.version})"))
 
+        if cfg.do_fixup or cfg.do_texbake:
+            kept = backup_files([working_m2, *self._skins(working_m2)],
+                                os.path.join(cfg.out_dir, "_backup"))
+            if kept:
+                self._log(f"Backed up {len(kept)} file(s) to _backup/ before editing.")
+
         # --- fixup ---
         if cfg.do_fixup:
             self._log("Fixup: cleaning flags / clamping submeshes...")
             self._progress(70)
-            notes = self._fixup(working_m2)
-            res.add(StageResult("fixup", True, "; ".join(notes) or "no changes"))
+            notes, rejected = self._fixup(working_m2)
+            detail = "; ".join(notes) or "no changes"
+            if rejected:
+                detail += f" | {len(rejected)} edit(s) rejected by verification"
+            res.add(StageResult("fixup", not rejected, detail))
+
+        # --- texbake ---
+        if cfg.do_texbake:
+            self._progress(80)
+            res.add(self._texbake(working_m2, txid))
 
         # --- check ---
         if cfg.do_check:
@@ -317,38 +350,96 @@ class Pipeline:
         root = self.cfg.source or os.path.dirname(self.cfg.model)
         return make_file_id_loader(root, ".skel"), make_file_id_loader(root, ".anim")
 
-    def _fixup(self, m2_path: str) -> list[str]:
-        notes: list[str] = []
+    def _skins(self, m2_path: str) -> list[str]:
         out_dir = self.cfg.out_dir
         stem = os.path.splitext(os.path.basename(m2_path))[0]
-        skins = [os.path.join(out_dir, n) for n in sorted(os.listdir(out_dir))
-                 if n.lower().startswith(stem.lower()) and n.lower().endswith(".skin")]
+        return [os.path.join(out_dir, n) for n in sorted(os.listdir(out_dir))
+                if n.lower().startswith(stem.lower()) and n.lower().endswith(".skin")]
+
+    def _texbake(self, m2_path: str, txid: list[int]) -> StageResult:
+        """Bake in-game paths into type-0 slots MultiConverter left empty (resolved
+        from the pre-convert TXID via the listfile), plus any explicit slot paths."""
+        try:
+            with open(m2_path, "rb") as fh:
+                data = fh.read()
+        except OSError as exc:
+            return StageResult("texbake", False, str(exc))
+        if data[:4] != b"MD20":
+            self._log("Texbake: SKIPPED (model is not MD20 yet - MultiConverter has to run first)")
+            return StageResult("texbake", True, "model not converted yet", skipped=True)
+
+        needed = texbake.empty_slot_fdids(data, txid)
+        known: dict[int, str] = {}
+        if needed:
+            lf = self.cfg.tools.get("listfile")
+            self._log(f"Texbake: resolving {len(needed)} texture FileDataID(s) via the listfile...")
+            known = texbake.resolve_fdids(needed, lf if lf and os.path.isfile(lf) else None,
+                                          self._overrides_csv())
+        plan = texbake.plan_bake(data, txid, known, self.cfg.texture_paths)
+
+        for slot, fdid in plan.unresolved:
+            self._log(f"  slot {slot}: FileDataID {fdid} not in the listfile - add it to "
+                      "data/overrides.csv or give an explicit path")
+        for slot in plan.no_id:
+            self._log(f"  slot {slot}: empty type-0 slot with no TXID entry - give an explicit path")
+        if not plan.paths:
+            detail = "no empty type-0 slots" if not (plan.unresolved or plan.no_id) else                 f"{len(plan.unresolved) + len(plan.no_id)} slot(s) left unresolved"
+            self._log(f"Texbake: nothing to bake ({detail})")
+            return StageResult("texbake", True, detail, skipped=True)
 
         try:
-            if fixup_mod.clear_stale_anim_flags(m2_path):
-                notes.append("cleared stale anim flags")
-        except ValueError:
-            pass
+            texbake.bake_file(m2_path, plan.paths)
+        except ValueError as exc:
+            self._log(f"Texbake: {exc}")
+            return StageResult("texbake", False, str(exc).splitlines()[0])
+
+        files = texbake.manifest_texture_files(find_manifest(self.cfg.model))
+        for slot, path in sorted(plan.paths.items()):
+            local = files.get(plan.fdids.get(slot, -1))
+            self._log(f"  slot {slot} -> {path}" + (f"   (pack wow.export's {local} there)" if local else ""))
+        left = len(plan.unresolved) + len(plan.no_id)
+        detail = f"baked {len(plan.paths)} slot(s)" + (f", {left} unresolved" if left else "")
+        return StageResult("texbake", True, detail)
+
+    def _overrides_csv(self) -> str | None:
+        """Manual FileDataID -> path fixes: Settings value, else the repo's data/overrides.csv."""
+        p = self.cfg.tools.get("overrides") or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "overrides.csv")
+        return p if os.path.isfile(p) else None
+
+    def _fixup(self, m2_path: str) -> tuple[list[str], list[str]]:
+        """Run each fixup; returns (notes, rejected). An edit whose output fails
+        verification is not applied - the file stays as it was - and is reported."""
+        notes: list[str] = []
+        rejected: list[str] = []
+        skins = self._skins(m2_path)
+
+        def attempt(label: str, fn):
+            try:
+                return fn()
+            except VerifyError as exc:
+                rejected.append(f"{label}: {exc}")
+                self._log(f"  REJECTED {label} - {exc} (file left unchanged)")
+            except ValueError:
+                pass            # not applicable to this file (wrong magic etc.)
+            return None
+
+        if attempt("anim flags", lambda: fixup_mod.clear_stale_anim_flags(m2_path)):
+            notes.append("cleared stale anim flags")
 
         for sp in skins:
-            try:
-                new_n = fixup_mod.clamp_skin_submeshes(sp, self.cfg.clamp_submeshes_to)
+            new_n = attempt(f"clamp {os.path.basename(sp)}",
+                            lambda sp=sp: fixup_mod.clamp_skin_submeshes(sp, self.cfg.clamp_submeshes_to))
+            if new_n is not None:
                 notes.append(f"{os.path.basename(sp)}->{new_n} submeshes")
-            except ValueError:
-                pass
 
         if self.cfg.fix_combiner:
-            try:
-                cleared, changed = fixup_mod.clear_combiner_combos(m2_path, skins)
-                if cleared or changed:
-                    notes.append(f"combiner flag cleared, {changed} shader(s) reset")
-            except ValueError:
-                pass
+            r = attempt("combiner fix", lambda: fixup_mod.clear_combiner_combos(m2_path, skins))
+            if r and (r[0] or r[1]):
+                notes.append(f"combiner flag cleared, {r[1]} shader(s) reset")
 
         if self.cfg.expected_skins is not None:
-            try:
-                fixup_mod.set_num_skin_profiles(m2_path, self.cfg.expected_skins)
-                notes.append(f"nViews={self.cfg.expected_skins}")
-            except ValueError:
-                pass
-        return notes
+            n = self.cfg.expected_skins
+            if attempt("nViews", lambda: fixup_mod.set_num_skin_profiles(m2_path, n) or True):
+                notes.append(f"nViews={n}")
+        return notes, rejected

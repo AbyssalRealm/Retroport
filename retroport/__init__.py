@@ -19,7 +19,8 @@ from .convert.skel_reinliner import reinline, reinline_file
 from .convert.loaders import make_file_id_loader, make_manifest_loader, find_manifest
 from .check import check_model, CheckResult
 from .pipeline import Pipeline, PipelineConfig, PipelineResult
-from .dbc import DBC, register_creature_model
+from .dbc import DBCFile, DBCError, register_creature_model, set_texture_variations
+from .convert.texbake import bake_file
 
 __version__ = "0.1.0"
 
@@ -48,8 +49,11 @@ __all__ = [
     "Pipeline",
     "PipelineConfig",
     "PipelineResult",
-    "DBC",
+    "DBCFile",
+    "DBCError",
     "register_creature_model",
+    "set_texture_variations",
+    "bake_file",
     "__version__",
 ]
 from .bugreport import build_report

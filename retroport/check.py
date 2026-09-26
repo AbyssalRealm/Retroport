@@ -13,7 +13,13 @@ What it surfaces:
   * texture list with type (type != 0 = filled at runtime, normal for character
     skin/hair; type 0 with an empty path = a real problem),
   * per-skin geoset list (skinSectionId) - directly explains missing body parts,
-  * batch shader_ids (0x8000 = not rendered).
+  * batch shader_ids (0x8000 = not rendered),
+  * (MD20 only) an un-merged multi-LOD export: the M2 declares far more vertices
+    than skin00 actually spans,
+  * (MD20 only) the animation table - inline / alias / external - and whether each
+    external sequence's <model><id>-<sub>.anim is present and in WotLK format.
+
+The LOD gate and animation classification are adapted from Conjure (MIT, TheDaveCalaz).
 """
 
 from __future__ import annotations
@@ -24,6 +30,8 @@ from dataclasses import dataclass, field
 
 from .models import Finding, Severity, ValidationReport
 from .formats import structs as S
+from .formats.md20 import read_sequences, read_texture_slots
+from .formats.verify import m2_data_block
 
 # character geoset groups (skinSectionId // 100); a guide, not exhaustive
 _GEOSET_GROUPS = {
@@ -45,6 +53,8 @@ _WOTLK_BONE_CEILING = 256
 _WOTLK_MAX_TRIANGLES = 21845
 # WotLK practical submesh ceiling (RaceBuilder clamps to this)
 _WOTLK_MAX_SUBMESHES = 59
+# M2 vertices beyond this multiple of skin00's span = an un-merged multi-LOD export
+_LOD_SPAN_RATIO = 1.5
 
 
 @dataclass
@@ -54,6 +64,7 @@ class SkinInfo:
     magic_ok: bool = True
     geosets: list[int] = field(default_factory=list)
     vertices: int = 0
+    vertex_span: int = 0          # max global vertex index referenced + 1
     triangles: int = 0
     batches: int = 0
     shaders: list[int] = field(default_factory=list)
@@ -64,6 +75,7 @@ class SkinInfo:
 class CheckResult:
     asset: str
     version: int | None = None
+    chunked: bool = False         # MD21 (modern, unconverted) vs MD20
     global_flags: int = 0
     combiner_combos: bool = False
     combiner_combo_count: int = 0
@@ -72,6 +84,9 @@ class CheckResult:
     vertices: int = 0
     materials: int = 0
     textures: list[tuple[int, str]] = field(default_factory=list)  # (type, path)
+    anim_inline: int = 0
+    anim_alias: list[str] = field(default_factory=list)      # NNNN-SS tags
+    anim_external: list[str] = field(default_factory=list)   # NNNN-SS tags (need .anim files)
     skins: list[SkinInfo] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
 
@@ -79,44 +94,19 @@ class CheckResult:
         return ValidationReport(asset=self.asset, findings=self.findings)
 
 
-def _data_block(data: bytes) -> bytes:
-    """Return the MD20-layout bytes whether the file is raw MD20 or MD21-wrapped."""
-    if data[:4] == b"MD20":
-        return data
-    if data[:4] == b"MD21":
-        (size,) = struct.unpack_from("<I", data, 4)
-        return data[8:8 + size]
-    # maybe MD21 isn't first; scan
-    pos = 0
-    while pos + 8 <= len(data):
-        magic = data[pos:pos + 4]
-        (size,) = struct.unpack_from("<I", data, pos + 4)
-        if magic == b"MD21":
-            return data[pos + 8:pos + 8 + size]
-        pos += 8 + size
-    raise ValueError("not an M2 (no MD20/MD21)")
+_data_block = m2_data_block   # kept for callers that import the old private name
 
 
 def _read_textures(block: bytes) -> list[tuple[int, str]]:
-    out: list[tuple[int, str]] = []
-    cnt, off = S.read_m2array(block, S.HDR_TEXTURES)
-    for i in range(cnt):
-        rec = off + i * S.M2TEXTURE
-        if rec + S.M2TEXTURE > len(block):
-            break
-        ttype = S.read_u32(block, rec + S.TEXTURE_TYPE)
-        fn_cnt, fn_off = S.read_m2array(block, rec + S.TEXTURE_FILENAME)
-        path = ""
-        if fn_cnt and fn_off + fn_cnt <= len(block):
-            path = block[fn_off:fn_off + fn_cnt].split(b"\x00", 1)[0].decode("ascii", "replace")
-        out.append((ttype, path))
-    return out
+    return [(t.type, t.name) for t in read_texture_slots(block)]
 
 
 def analyze_m2(path: str) -> CheckResult:
     with open(path, "rb") as fh:
-        block = _data_block(fh.read())
+        raw = fh.read()
+    block = m2_data_block(raw)
     res = CheckResult(asset=path)
+    res.chunked = raw[:4] != b"MD20"
     res.version = S.read_u32(block, S.MD20_VERSION)
     res.global_flags = S.read_u32(block, S.HDR_GLOBAL_FLAGS)
     res.combiner_combos = bool(res.global_flags & S.FLAG_USE_COMBINER_COMBOS)
@@ -127,9 +117,20 @@ def analyze_m2(path: str) -> CheckResult:
     res.textures = _read_textures(block)
     if res.combiner_combos:
         res.combiner_combo_count, _ = S.read_m2array(block, S.HDR_TEXTURE_COMBINER_COMBOS)
+    for seq in read_sequences(block):
+        if seq.kind == "inline":
+            res.anim_inline += 1
+        elif seq.kind == "alias":
+            res.anim_alias.append(seq.tag)
+        else:
+            res.anim_external.append(seq.tag)
 
     # findings
-    if res.version not in (256, 257, 260, 261, 262, 263, 264):
+    if res.version != 264 and (res.version & 0xFFFF) == 264:
+        res.findings.append(Finding(check="version", severity=Severity.WARN,
+            detail=f"version word is 0x{res.version:08X}: the low 16 bits are 264 but high bits are set "
+                   "(a converter artefact). Set it to 264 if the client rejects the model."))
+    elif res.version not in (256, 257, 260, 261, 262, 263, 264):
         res.findings.append(Finding(check="version", severity=Severity.WARN,
                                     detail=f"version {res.version} is not a WotLK-era value (expected 264); did MultiConverter run?"))
     if res.combiner_combos:
@@ -161,9 +162,11 @@ def analyze_skin(path: str) -> SkinInfo:
         rec = s_off + i * S.M2SKINSECTION
         if rec + 2 <= len(data):
             info.geosets.append(struct.unpack_from("<H", data, rec + S.SKINSECTION_ID)[0])
-    v_cnt, _ = S.read_m2array(data, S.SKIN_VERTICES)
+    v_cnt, v_off = S.read_m2array(data, S.SKIN_VERTICES)
     i_cnt, _ = S.read_m2array(data, S.SKIN_INDICES)
     info.vertices = v_cnt
+    if v_cnt and v_off + v_cnt * 2 <= len(data):
+        info.vertex_span = max(struct.unpack_from(f"<{v_cnt}H", data, v_off)) + 1
     info.triangles = i_cnt // 3
     b_cnt, b_off = S.read_m2array(data, S.SKIN_BATCHES)
     info.batches = b_cnt
@@ -232,7 +235,53 @@ def check_model(m2_path: str, skin_dir: str | None = None) -> CheckResult:
                 res.findings.append(Finding(check="shaders", severity=Severity.WARN,
                     detail=f"batch shader values {sorted(set(primary.shaders))} are combiner-combo indices (flag 0x08); "
                            "verify they're in range or the batches go black."))
+
+        # Multi-LOD gate: a converted model whose M2 vertex count dwarfs what skin00
+        # actually uses was exported with its LODs un-merged - it won't pack cleanly.
+        if not res.chunked and primary.vertex_span and res.vertices > primary.vertex_span * _LOD_SPAN_RATIO:
+            res.findings.append(Finding(check="lod_unmerged", severity=Severity.FAIL,
+                detail=f"the M2 declares {res.vertices} vertices but skin00 only spans {primary.vertex_span}: "
+                       "an un-merged multi-LOD export. Re-convert the RAW wow.export model with MultiConverter "
+                       "(Shadowlands-Wotlk if it has a .skel, Legion-Wotlk if not) and check again; if it still "
+                       "mismatches, the LODs need collapsing by hand."))
+
+    if not res.chunked:
+        _check_anims(res, folder, stem)
     return res
+
+
+def _check_anims(res: CheckResult, folder: str, stem: str) -> None:
+    """External sequences load <stem><id>-<sub>.anim at runtime; a missing one
+    crashes the client the moment that animation plays."""
+    if not res.anim_external:
+        if res.anim_inline or res.anim_alias:
+            res.findings.append(Finding(check="animations", severity=Severity.PASS,
+                detail=f"{res.anim_inline} inline, {len(res.anim_alias)} alias, 0 external - "
+                       "no .anim files to pack."))
+        return
+    missing, chunked = [], []
+    for tag in sorted(res.anim_external):
+        p = os.path.join(folder, f"{stem}{tag}.anim")
+        if not os.path.isfile(p):
+            missing.append(tag)
+            continue
+        with open(p, "rb") as fh:
+            if fh.read(4) == b"AFM2":
+                chunked.append(tag)
+    if missing:
+        res.findings.append(Finding(check="anim_missing", severity=Severity.FAIL,
+            detail=f"{len(missing)} external .anim file(s) not found next to the model: "
+                   f"{', '.join(missing)} (expected {stem}<id>-<sub>.anim). The client crashes when "
+                   "one of those animations plays."))
+    if chunked:
+        res.findings.append(Finding(check="anim_format", severity=Severity.WARN,
+            detail=f".anim file(s) {', '.join(chunked)} are Legion+ chunked (AFM2); a 3.3.5 client "
+                   "expects raw pre-Legion .anim data. Convert them, or re-inline the animations."))
+    present = len(res.anim_external) - len(missing)
+    if present:
+        res.findings.append(Finding(check="animations", severity=Severity.WARN,
+            detail=f"{res.anim_inline} inline, {len(res.anim_alias)} alias, {len(res.anim_external)} external - "
+                   f"pack the {present} .anim file(s) alongside the model."))
 
 
 def format_report(res: CheckResult) -> str:

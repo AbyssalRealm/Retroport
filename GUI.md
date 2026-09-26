@@ -28,7 +28,11 @@ The stages, in order:
 | Re-inline    | fold `.skel` + `.anim` into a self-contained M2          | built |
 | MultiConverter | MD21 → MD20, version 264, resolve TXID/SFID            | exe   |
 | Fixup        | clear stale anim flags, clamp submeshes, set nViews      | built |
-| Check        | WotLK render-blocker diagnostics                          | built |
+| Bake textures | fill empty type-0 texture slots from TXID + listfile    | listfile (Settings) |
+| Check        | WotLK render-blocker diagnostics (+ LOD gate, .anim files) | built |
+
+The output folder must not be the model's own folder (the run refuses it), and the
+converted model + skins are copied to `<out>/_backup/` before fixup/bake edit them.
 
 Re-inline auto-skips a model with no `.skel` (it passes straight through).
 MultiConverter is attempted via CLI argument; if a build ignores it, the log says
@@ -36,8 +40,12 @@ so and you run that one step by hand.
 
 **Register** - make a converted model usable in-game. Point it at an extracted DBC
 folder + the in-game model path; it appends `CreatureModelData` +
-`CreatureDisplayInfo`, writes patched DBCs, and prints the `displayId` (for
-`creature_template.modelid`) plus a `creature_model_info` SQL line.
+`CreatureDisplayInfo` and writes patched DBCs (original names, ready to pack) into a
+separate output folder. Optional: the converted `.m2` (fills the GeoBox from its bounds),
+model scale, ID floors (remembered; 0 = next free), TextureVariation1-3 + CreatureGeosetData
+for models with type 11/12/13 texture slots, and creature entries - which turn the SQL into
+a full AzerothCore `creature_template_model` repoint block with a display-sharing check.
+The DBC engine refuses non-3.3.5 layouts and verifies every write (adapted from Conjure).
 
 **Settings** - the external tool exes, saved with QSettings: MultiConverter, M2Mod,
 BLPConverter, MPQ Editor, Blender, and the listfile. These flow into the pipeline

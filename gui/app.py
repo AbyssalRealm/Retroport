@@ -2,7 +2,8 @@
 
 A thin shell over retroport's headless pipeline. Three tabs:
   * Convert  - pick a model, toggle stages, run the end-to-end pipeline, watch logs.
-  * Register - append CreatureModelData/CreatureDisplayInfo for a converted model.
+  * Register - append CreatureModelData/CreatureDisplayInfo for a converted model
+               (ID floors, TextureVariations, GeoBox from the model, repoint SQL).
   * Settings - point at the external tool exes (persisted with QSettings).
 
 All heavy work runs in a background thread (PipelineWorker); the tool paths flow
@@ -24,6 +25,9 @@ from PyQt6.QtWidgets import (
 
 from retroport.pipeline import PipelineConfig
 from retroport.dbc import register_creature_model
+from retroport.formats.md20 import read_bounds
+from retroport.formats.verify import m2_data_block
+from retroport.sql import SQLInputError
 from .worker import PipelineWorker
 
 ORG, APP = "Retroport", "RetroportGUI"
@@ -88,9 +92,12 @@ class RetroportGUI(QWidget):
         self.cb_convert = QCheckBox("MultiConverter"); self.cb_convert.setChecked(True)
         self.cb_fixup = QCheckBox("Fixup"); self.cb_fixup.setChecked(True)
         self.cb_combiner = QCheckBox("Fix combiner flag"); self.cb_combiner.setChecked(True)
+        self.cb_texbake = QCheckBox("Bake textures"); self.cb_texbake.setChecked(True)
+        self.cb_texbake.setToolTip("After MultiConverter: fill empty type-0 texture slots from the "
+                                   "model's TXID via the listfile (Settings)")
         self.cb_check = QCheckBox("Check"); self.cb_check.setChecked(True)
         for cb in (self.cb_reinline, self.cb_polyreduce, self.cb_txid, self.cb_convert, self.cb_fixup,
-                   self.cb_combiner, self.cb_check):
+                   self.cb_combiner, self.cb_texbake, self.cb_check):
             sh.addWidget(cb)
         stages.setLayout(sh)
 
@@ -142,6 +149,32 @@ class RetroportGUI(QWidget):
         self.reg_path = QLineEdit()
         self.reg_path.setPlaceholderText(r"Creature\MyModel\mymodel.m2")
         form.addRow("In-game model path:", self.reg_path)
+        self.reg_m2 = QLineEdit()
+        self.reg_m2.setPlaceholderText("(optional) converted .m2 - fills the GeoBox from its bounds")
+        form.addRow("Converted model:", _row(self.reg_m2, self._browse_reg_m2))
+        self.reg_scale = QDoubleSpinBox(); self.reg_scale.setRange(0.01, 100.0); self.reg_scale.setValue(1.0)
+        form.addRow("Model scale:", self.reg_scale)
+        floors = QHBoxLayout()
+        self.reg_display_floor = QSpinBox(); self.reg_display_floor.setRange(0, 2_000_000_000)
+        self.reg_model_floor = QSpinBox(); self.reg_model_floor.setRange(0, 2_000_000_000)
+        for sb, key in ((self.reg_display_floor, "reg_display_floor"), (self.reg_model_floor, "reg_model_floor")):
+            sb.setValue(int(self.settings.value(key, 0) or 0))
+            sb.setSpecialValueText("next free (max + 1)")
+        floors.addWidget(QLabel("DisplayID from:")); floors.addWidget(self.reg_display_floor)
+        floors.addWidget(QLabel("   ModelData ID from:")); floors.addWidget(self.reg_model_floor)
+        form.addRow("ID floors:", floors)
+        tv = QHBoxLayout()
+        self.reg_tv = [QLineEdit() for _ in range(3)]
+        for i, le in enumerate(self.reg_tv, 1):
+            le.setPlaceholderText(f"TextureVariation{i} (bare name)")
+            tv.addWidget(le)
+        form.addRow("Texture variations:", tv)
+        self.reg_geoset = QSpinBox(); self.reg_geoset.setRange(0, 2_000_000_000)
+        form.addRow("CreatureGeosetData:", self.reg_geoset)
+        self.reg_entries = QLineEdit(); self.reg_entries.setPlaceholderText("(optional) e.g. 1234, 5678")
+        form.addRow("Creature entries to repoint:", self.reg_entries)
+        self.reg_search = QLineEdit(); self.reg_search.setPlaceholderText("(optional) creature name for a search query")
+        form.addRow("Creature name:", self.reg_search)
         self.reg_btn = QPushButton("Add CreatureModelData + DisplayInfo")
         self.reg_btn.clicked.connect(self._register)
         self.reg_out = QTextEdit(); self.reg_out.setReadOnly(True)
@@ -193,6 +226,10 @@ class RetroportGUI(QWidget):
         d = QFileDialog.getExistingDirectory(self, "DBC folder")
         if d: self.reg_dbc_dir.setText(d)
 
+    def _browse_reg_m2(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Converted .m2", "", "M2 models (*.m2)")
+        if f: self.reg_m2.setText(f)
+
     def _browse_regout(self):
         d = QFileDialog.getExistingDirectory(self, "Output DBC folder")
         if d: self.reg_out_dir.setText(d)
@@ -237,6 +274,7 @@ class RetroportGUI(QWidget):
             expected_skins=self.nviews_spin.value() or None,
             multiconverter_args=shlex.split(self.settings.value("multiconverter_args", "") or ""),
             fix_combiner=self.cb_combiner.isChecked(),
+            do_texbake=self.cb_texbake.isChecked(),
         )
         self.run_btn.setEnabled(False)
         self.console.clear()
@@ -260,15 +298,30 @@ class RetroportGUI(QWidget):
         if not (os.path.isdir(dbc_dir) and out_dir and path):
             QMessageBox.warning(self, "Missing fields", "Fill DBC folder, output folder, and in-game path.")
             return
+        self.settings.setValue("reg_display_floor", self.reg_display_floor.value())
+        self.settings.setValue("reg_model_floor", self.reg_model_floor.value())
         try:
-            r = register_creature_model(dbc_dir, out_dir, path)
-        except (FileNotFoundError, ValueError) as exc:
+            bounds = None
+            m2 = self.reg_m2.text().strip()
+            if m2:
+                with open(m2, "rb") as fh:
+                    bounds = read_bounds(m2_data_block(fh.read()))
+            r = register_creature_model(
+                dbc_dir, out_dir, path, self.reg_scale.value(),
+                display_floor=self.reg_display_floor.value() or None,
+                modeldata_floor=self.reg_model_floor.value() or None,
+                texture_variations=tuple(le.text().strip() for le in self.reg_tv),
+                geoset_data=self.reg_geoset.value(), bounds=bounds,
+                creature_entries=self.reg_entries.text(), search_term=self.reg_search.text())
+        except (OSError, ValueError, SQLInputError) as exc:
             QMessageBox.critical(self, "Registration failed", str(exc))
             return
         self.reg_out.setPlainText(
-            f"CreatureModelData id : {r.model_id}\n"
-            f"CreatureDisplayInfo id: {r.display_id}   <- creature_template.modelid\n"
-            f"Patched DBCs written to: {out_dir}\n\n{r.sql}")
+            f"CreatureDisplayInfo id: {r.display_id}   <- creature_template_model.CreatureDisplayID\n"
+            f"CreatureModelData id : {r.model_id}  -> {r.model_name}\n"
+            f"Patched DBCs written to: {out_dir}\n"
+            "Put BOTH DBCs in the client patch (DBFilesClient\\) AND the server's dbc\\ folder.\n\n"
+            f"{r.sql}")
 
 
 def main() -> None:
