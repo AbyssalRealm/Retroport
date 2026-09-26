@@ -1,0 +1,3 @@
+# Manual FileDataID -> path fixes. Format: fdid;path  (or fdid,path)
+# Overrides load after the community listfile and win on conflict.
+# 5320575;Creature\drakemount\drakemount.m2

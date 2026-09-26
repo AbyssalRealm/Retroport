@@ -1,0 +1,27 @@
+[project]
+name = "retroport"
+version = "0.1.0"
+description = "Automate porting modern WoW assets (Cata-TWW) down to 3.3.5a."
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+gui = ["PyQt6>=6.5"]
+
+[project.scripts]
+retroport = "retroport.cli:main"
+
+[project.gui-scripts]
+retroport-gui = "gui.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["retroport*", "gui*"]
