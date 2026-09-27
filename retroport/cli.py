@@ -7,6 +7,7 @@
     retroport check <md20> [--json]                  WotLK render-blocker diagnostics on converted output
     retroport bake <md20> --slot N=path [--json]     bake in-game texture paths into type-0 slots
     retroport register --dbc-dir --out --path        add CreatureModelData/DisplayInfo rows + SQL
+    retroport register-item --dbc-dir --out ...      add an ItemDisplayInfo row (+ Item.dbc repoint) + SQL
 
 Designed to run today against any folder. Point it at a wow.export extraction
 to get a real asset inventory and a list of what still needs conversion.
@@ -490,6 +491,71 @@ def register(
     console.print(f"[green]DisplayID {r.display_id}[/] -> ModelData {r.model_id} -> {r.model_name}")
     console.print(f"  {r.model_dbc}\n  {r.display_dbc}")
     console.print("[dim]Put BOTH DBCs in the client patch (DBFilesClient\\) AND the server's dbc\\ folder.[/]\n")
+    console.print(r.sql, markup=False, highlight=False)
+
+
+@app.command("register-item")
+def register_item(
+    dbc_dir: str = typer.Option(..., "--dbc-dir", help="Folder with the 3.3.5a ItemDisplayInfo.dbc (and Item.dbc)."),
+    out: str = typer.Option(..., "--out", help="Folder for the patched DBCs (must differ from --dbc-dir)."),
+    like_display: int = typer.Option(None, "--like-display", help="Clone this existing DisplayID (sound, flags...) and override."),
+    from_model: str = typer.Option("", "--from-model", help="Converted .m2: prefills --model and --texture (type-2 slot)."),
+    model: str = typer.Option(None, "--model", help="Model filename, e.g. Axe_2H_Foo.mdx."),
+    model_right: str = typer.Option(None, "--model-right", help="Right model (shoulders)."),
+    texture: str = typer.Option(None, "--texture", help="ModelTexture: bare .blp name in the model's folder."),
+    texture_right: str = typer.Option(None, "--texture-right"),
+    icon: str = typer.Option(None, "--icon", help="Inventory icon name, e.g. INV_Axe_04."),
+    component: list[str] = typer.Option(None, "--component", help="Section=name body texture (repeatable), e.g. TorsoUpper=Foo_Chest_TU."),
+    geosets: str = typer.Option("", "--geosets", help="GeosetGroup 1,2,3."),
+    flags: int = typer.Option(None, "--flags"),
+    spell_visual: int = typer.Option(None, "--spell-visual"),
+    sound_group: int = typer.Option(None, "--sound-group", help="GroupSoundIndex (cloned from --like-display if omitted)."),
+    item_visual: int = typer.Option(None, "--item-visual", help="ItemVisual (enchant-style glow)."),
+    display_floor: int = typer.Option(0, "--display-floor", help="First DisplayID to try (0 = max+1)."),
+    entries: str = typer.Option("", "--entries", help="item_template entries to repoint (comma-separated)."),
+    item_like: int = typer.Option(None, "--item-like", help="Existing item entry whose Item.dbc row new entries copy."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the JSON result envelope to stdout."),
+) -> None:
+    """Add an ItemDisplayInfo row for a converted weapon/armor model (and repoint Item.dbc + SQL)."""
+    from .itemdbc import register_item_display, suggest_from_model
+    from .sql import SQLInputError
+
+    try:
+        if from_model:
+            hint = suggest_from_model(from_model)
+            model = model if model is not None else hint["model"]
+            texture = texture if texture is not None else (hint["texture"] or None)
+        comps = {}
+        for c in component or []:
+            k, sep, v = c.partition("=")
+            if not sep:
+                raise typer.BadParameter(f"--component expects Section=name, got '{c}'")
+            comps[k.strip()] = v.strip()
+        geo = tuple(int(g) for g in geosets.split(",")) if geosets else None
+        r = register_item_display(
+            dbc_dir, out, template_display_id=like_display, model=model, model_right=model_right,
+            texture=texture, texture_right=texture_right, icon=icon, component_textures=comps or None,
+            geoset_groups=geo, flags=flags, spell_visual=spell_visual, sound_group=sound_group,
+            item_visual=item_visual, display_floor=display_floor or None,
+            item_entries=entries, item_like=item_like)
+    except (OSError, ValueError, SQLInputError) as exc:
+        if json_out:
+            _emit_json("register-item", False, None, str(exc))
+        else:
+            console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    if json_out:
+        _emit_json("register-item", True, r)
+        raise typer.Exit(code=0)
+    console.print(f"[green]ItemDisplayInfo {r.display_id}[/]  {r.row}")
+    for label, ids in (("Item.dbc repointed", r.items_updated), ("Item.dbc added", r.items_added),
+                       ("[yellow]not in Item.dbc[/]", r.items_missing)):
+        if ids:
+            console.print(f"  {label}: {', '.join(map(str, ids))}")
+    console.print("\nPack into the patch MPQ:")
+    for p in r.pack:
+        console.print(f"  {p}", markup=False, highlight=False)
+    console.print()
     console.print(r.sql, markup=False, highlight=False)
 
 

@@ -47,6 +47,14 @@ for models with type 11/12/13 texture slots, and creature entries - which turn t
 a full AzerothCore `creature_template_model` repoint block with a display-sharing check.
 The DBC engine refuses non-3.3.5 layouts and verifies every write (adapted from Conjure).
 
+**Item** - make a converted weapon/armor model usable as an item. Point it at the DBC
+folder (ItemDisplayInfo.dbc + Item.dbc) and a separate output folder, optionally clone an
+existing DisplayID of the same kind, and press **Fill** to read the model name + item-skin
+texture from the converted `.m2`. Armor body textures go in the (checkable) armor box.
+Item entries get their Item.dbc row repointed (new ones copy the "Item.dbc row of" entry).
+The output lists the new displayId, the paths to pack, and the SQL. See the README's
+*Items* section for why Item.dbc matters on AzerothCore.
+
 **Settings** - the external tool exes, saved with QSettings: MultiConverter, M2Mod,
 BLPConverter, MPQ Editor, Blender, and the listfile. These flow into the pipeline
 as `PipelineConfig.tools`.

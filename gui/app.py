@@ -68,6 +68,7 @@ class RetroportGUI(QWidget):
         tabs = QTabWidget()
         tabs.addTab(self._convert_tab(), "Convert")
         tabs.addTab(self._register_tab(), "Register")
+        tabs.addTab(self._item_tab(), "Item")
         tabs.addTab(self._settings_tab(), "Settings")
         layout.addWidget(tabs)
         self.setLayout(layout)
@@ -186,6 +187,84 @@ class RetroportGUI(QWidget):
         w.setLayout(v)
         return w
 
+    def _item_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout()
+        form = QFormLayout()
+        self.item_dbc_dir = QLineEdit(self.settings.value("item_dbc_dir", ""))
+        form.addRow("DBC folder (ItemDisplayInfo, Item):",
+                    _row(self.item_dbc_dir, lambda: self._pick_dir(self.item_dbc_dir, "DBC folder")))
+        self.item_out_dir = QLineEdit(self.settings.value("item_out_dir", ""))
+        form.addRow("Output DBC folder:", _row(self.item_out_dir, lambda: self._pick_dir(self.item_out_dir, "Output")))
+        self.item_like_display = QSpinBox(); self.item_like_display.setRange(0, 2_000_000_000)
+        self.item_like_display.setSpecialValueText("none (fresh row)")
+        self.item_like_display.setToolTip("Clone an existing display of the same kind (e.g. a Blizzard 2H axe) "
+                                          "to inherit its sound group and flags; blank fields below keep its values")
+        form.addRow("Clone DisplayID:", self.item_like_display)
+        self.item_m2 = QLineEdit()
+        self.item_m2.setPlaceholderText("(optional) converted .m2 - 'Fill' reads model + texture from it")
+        fill = QHBoxLayout()
+        fill.addLayout(_row(self.item_m2, lambda: self._pick_file(self.item_m2, "Converted .m2", "M2 models (*.m2)")))
+        fill_btn = QPushButton("Fill"); fill_btn.setFixedWidth(60); fill_btn.clicked.connect(self._item_fill)
+        fill.addWidget(fill_btn)
+        form.addRow("From model:", fill)
+        self.item_model = QLineEdit(); self.item_model.setPlaceholderText("Axe_2H_Foo.mdx")
+        self.item_model_r = QLineEdit(); self.item_model_r.setPlaceholderText("(shoulders) RShoulder_Foo.mdx")
+        self.item_tex = QLineEdit(); self.item_tex.setPlaceholderText("bare .blp name in the model's folder")
+        self.item_tex_r = QLineEdit()
+        self.item_icon = QLineEdit(); self.item_icon.setPlaceholderText("INV_Axe_04")
+        form.addRow("Model:", self.item_model)
+        form.addRow("Right model:", self.item_model_r)
+        form.addRow("Model texture:", self.item_tex)
+        form.addRow("Right texture:", self.item_tex_r)
+        form.addRow("Icon:", self.item_icon)
+        nums = QHBoxLayout()
+        self.item_sound = QSpinBox(); self.item_sound.setRange(-1, 1000); self.item_sound.setValue(-1)
+        self.item_sound.setSpecialValueText("keep")
+        self.item_visual = QSpinBox(); self.item_visual.setRange(-1, 100000); self.item_visual.setValue(-1)
+        self.item_visual.setSpecialValueText("keep")
+        self.item_floor = QSpinBox(); self.item_floor.setRange(0, 2_000_000_000)
+        self.item_floor.setSpecialValueText("next free")
+        for label, sb in (("Sound group:", self.item_sound), ("   ItemVisual:", self.item_visual),
+                          ("   DisplayID from:", self.item_floor)):
+            nums.addWidget(QLabel(label)); nums.addWidget(sb)
+        form.addRow("", nums)
+
+        armor = QGroupBox("Armor body textures (bare names, no _U/_M/_F)")
+        af = QFormLayout()
+        from retroport.itemdbc import COMPONENT_SECTIONS
+        self.item_comp = {}
+        for section in COMPONENT_SECTIONS:
+            le = QLineEdit(); self.item_comp[section] = le
+            af.addRow(section + ":", le)
+        armor.setLayout(af)
+        armor.setCheckable(True); armor.setChecked(False)
+        armor.toggled.connect(lambda on: [le.setEnabled(on) for le in self.item_comp.values()])
+        for le in self.item_comp.values():
+            le.setEnabled(False)
+        self.item_armor_box = armor
+
+        items = QFormLayout()
+        self.item_entries = QLineEdit(); self.item_entries.setPlaceholderText("(optional) item_template entries, e.g. 90001, 90002")
+        self.item_like = QSpinBox(); self.item_like.setRange(0, 2_000_000_000)
+        self.item_like.setSpecialValueText("none")
+        self.item_like.setToolTip("Existing item entry whose Item.dbc row is copied for entries not yet in Item.dbc "
+                                  "(needed for creature_equip_template)")
+        items.addRow("Item entries to repoint:", self.item_entries)
+        items.addRow("New entries copy Item.dbc row of:", self.item_like)
+
+        btn = QPushButton("Add ItemDisplayInfo")
+        btn.clicked.connect(self._register_item)
+        self.item_out = QTextEdit(); self.item_out.setReadOnly(True)
+        self.item_out.setStyleSheet("font-family:Consolas;")
+        v.addLayout(form)
+        v.addWidget(armor)
+        v.addLayout(items)
+        v.addWidget(btn)
+        v.addWidget(self.item_out)
+        w.setLayout(v)
+        return w
+
     def _settings_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout()
@@ -225,6 +304,67 @@ class RetroportGUI(QWidget):
     def _browse_dbc(self):
         d = QFileDialog.getExistingDirectory(self, "DBC folder")
         if d: self.reg_dbc_dir.setText(d)
+
+    def _pick_dir(self, le: QLineEdit, title: str):
+        d = QFileDialog.getExistingDirectory(self, title)
+        if d: le.setText(d)
+
+    def _pick_file(self, le: QLineEdit, title: str, filt: str):
+        f, _ = QFileDialog.getOpenFileName(self, title, "", filt)
+        if f: le.setText(f)
+
+    def _item_fill(self):
+        from retroport.itemdbc import suggest_from_model
+        m2 = self.item_m2.text().strip()
+        if not os.path.isfile(m2):
+            QMessageBox.warning(self, "No model", "Pick the converted .m2 first.")
+            return
+        hint = suggest_from_model(m2)
+        self.item_model.setText(hint["model"])
+        if hint["texture"]:
+            self.item_tex.setText(hint["texture"])
+
+    def _register_item(self):
+        from retroport.itemdbc import register_item_display
+        dbc_dir, out_dir = self.item_dbc_dir.text().strip(), self.item_out_dir.text().strip()
+        if not (os.path.isdir(dbc_dir) and out_dir):
+            QMessageBox.warning(self, "Missing fields", "Fill the DBC folder and the output folder.")
+            return
+        self.settings.setValue("item_dbc_dir", dbc_dir)
+        self.settings.setValue("item_out_dir", out_dir)
+
+        def text(le: QLineEdit):
+            t = le.text().strip()
+            return t or None                      # blank = keep the cloned value / leave empty
+
+        comps = ({k: le.text().strip() for k, le in self.item_comp.items() if le.text().strip()}
+                 if self.item_armor_box.isChecked() else None)
+        try:
+            r = register_item_display(
+                dbc_dir, out_dir,
+                template_display_id=self.item_like_display.value() or None,
+                model=text(self.item_model), model_right=text(self.item_model_r),
+                texture=text(self.item_tex), texture_right=text(self.item_tex_r), icon=text(self.item_icon),
+                component_textures=comps or None,
+                sound_group=None if self.item_sound.value() < 0 else self.item_sound.value(),
+                item_visual=None if self.item_visual.value() < 0 else self.item_visual.value(),
+                display_floor=self.item_floor.value() or None,
+                item_entries=self.item_entries.text(), item_like=self.item_like.value() or None)
+        except (OSError, ValueError, SQLInputError) as exc:
+            QMessageBox.critical(self, "Item registration failed", str(exc))
+            return
+        lines = [f"ItemDisplayInfo id: {r.display_id}   <- item_template.displayid",
+                 "Row: " + ", ".join(f"{k}={v}" for k, v in r.row.items())]
+        if r.items_updated:
+            lines.append(f"Item.dbc repointed: {', '.join(map(str, r.items_updated))}")
+        if r.items_added:
+            lines.append(f"Item.dbc added: {', '.join(map(str, r.items_added))}")
+        if r.items_missing:
+            lines.append(f"NOT in Item.dbc (NPC equipment will drop them): {', '.join(map(str, r.items_missing))}")
+        lines += [f"Patched DBCs written to: {out_dir}", "", "Pack into the patch MPQ:"]
+        lines += [f"  {p}" for p in r.pack]
+        lines += ["", r.sql]
+        self.item_out.setPlainText("\n".join(lines))
 
     def _browse_reg_m2(self):
         f, _ = QFileDialog.getOpenFileName(self, "Converted .m2", "", "M2 models (*.m2)")

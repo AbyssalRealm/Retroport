@@ -21,6 +21,7 @@ Division of labor:
 | Bake in-game paths into type-0 texture slots MultiConverter left empty | **retroport** (texbake) |
 | Diagnose triangles / submeshes / textures / bones / skins / LODs / `.anim` files | **retroport** (check) |
 | Write CreatureModelData + CreatureDisplayInfo rows, repoint SQL | **retroport** (register) |
+| Write ItemDisplayInfo rows (weapons/armor), repoint Item.dbc, item SQL + pack paths | **retroport** (register-item) |
 | **MD21 → MD20, version → 264, TXID/SFID texture resolution** | **MultiConverter** (external exe) |
 | **`.m2` ↔ `.m2i` + mesh decimation** | **M2Mod** (external exe) **+ Blender** |
 
@@ -98,7 +99,24 @@ retroport check  I:\conv\foo.m2               # WotLK render-blocker diagnostics
 retroport bake  I:\conv\foo.m2 --slot 0=Creature\Foo\foo_skin.blp       # manual texture paths
 retroport bake  I:\conv\foo.m2 --source-m2 I:\extract\foo.m2 --listfile listfile.csv   # auto from TXID
 retroport register --dbc-dir I:\dbc --out I:\patch\DBFilesClient --path Creature\Foo\foo.m2 --m2 I:\conv\foo.m2 --entries 1234
+retroport register-item --dbc-dir I:\dbc --out I:\patch\DBFilesClient --like-display 782 --from-model I:\extract\axe_foo.m2 --icon INV_Axe_04 --entries 90001 --item-like 1391
 ```
+
+### Items (`register-item`)
+
+Adds an `ItemDisplayInfo` row for a converted weapon/armor model. Cloning an existing
+display of the same kind (`--like-display`, e.g. a Blizzard 2H axe) inherits its sound
+group and flags; every value you give overrides it. Names follow Blizzard's rows: model =
+bare filename with `.mdx`, textures/icon = bare names (the client picks the folder from the
+item type). `--from-model` fills the model name and the texture for the model's type-2
+(item skin) slot from the wow.export manifest. Armor uses `--component TorsoUpper=Name`
+etc. for the eight body-texture fields.
+
+Why `Item.dbc` is touched too: AzerothCore overwrites `item_template.displayid` with
+`Item.dbc`'s DisplayInfoID for any item listed there (`DBC.EnforceItemAttributes`, on by
+default), and `creature_equip_template` drops items missing from `Item.dbc`. So `--entries`
+repoints existing Item.dbc rows, and new entries get a row copied from `--item-like`.
+The result lists the in-MPQ paths to pack (model, `00.skin`, texture, icon).
 
 ## Status - validated vs. needs in-client testing
 
@@ -124,7 +142,8 @@ when the M2 carries more than 1.5x the vertices skin00 uses. Models that ship a 
 `_lod` skin trip it; whether that actually breaks a 3.3.5 client is untested.
 
 **Gaps:** MPQ packaging; converting / inlining the external `.anim` files of non-skel
-models; items (ItemDisplayInfo), WMOs and doodads; bone pruning over the ~256 ceiling.
+models; helm per-race models and armor texture resizing; WMOs and doodads; bone pruning
+over the ~256 ceiling.
 
 **Tool quirk:** MultiConverter reports "No files to convert" when the model path is over
 260 characters (Windows MAX_PATH) - keep output folders short.
@@ -137,6 +156,7 @@ retroport/
   pipeline.py          the headless conductor (Pipeline / PipelineConfig)
   check.py             WotLK render-blocker diagnostics (+ LOD gate, .anim checks)
   dbc.py               WDBC engine, CreatureModelData/DisplayInfo registration, TextureVariations
+  itemdbc.py           ItemDisplayInfo + Item.dbc writer, pack paths, prefill from a model
   sql.py               AzerothCore creature_template_model repoint SQL
   safeio.py            atomic write-verify-replace, backups
   scan/                chunk-walk classifier
