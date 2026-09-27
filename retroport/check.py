@@ -236,18 +236,57 @@ def check_model(m2_path: str, skin_dir: str | None = None) -> CheckResult:
                     detail=f"batch shader values {sorted(set(primary.shaders))} are combiner-combo indices (flag 0x08); "
                            "verify they're in range or the batches go black."))
 
-        # Multi-LOD gate: a converted model whose M2 vertex count dwarfs what skin00
-        # actually uses was exported with its LODs un-merged - it won't pack cleanly.
-        if not res.chunked and primary.vertex_span and res.vertices > primary.vertex_span * _LOD_SPAN_RATIO:
-            res.findings.append(Finding(check="lod_unmerged", severity=Severity.FAIL,
-                detail=f"the M2 declares {res.vertices} vertices but skin00 only spans {primary.vertex_span}: "
-                       "an un-merged multi-LOD export. Re-convert the RAW wow.export model with MultiConverter "
-                       "(Shadowlands-Wotlk if it has a .skel, Legion-Wotlk if not) and check again; if it still "
-                       "mismatches, the LODs need collapsing by hand."))
+        if not res.chunked and primary.vertex_span and res.vertices > primary.vertex_span:
+            _check_lod_vertices(res, primary, folder, stem)
 
     if not res.chunked:
         _check_anims(res, folder, stem)
     return res
+
+
+def _check_lod_vertices(res: CheckResult, primary: SkinInfo, folder: str, stem: str) -> None:
+    """The M2 holds more vertices than skin00 uses. Two very different causes:
+
+    * stacked LOD blocks (the normal modern layout): the vertex array is skin00's
+      block followed by one block per LOD skin, and each modern LOD skin numbers
+      its vertices from 0 *within its own block*. WotLK has no per-skin base, so
+      those skins index into skin00's block instead. Harmless while the client
+      doesn't load them (nViews), garbled geometry if it does.
+    * anything else past the Conjure ratio: an un-merged multi-LOD export.
+    """
+    skins = []                      # (index, SkinInfo) for every <stem>NN.skin on disk
+    for i in range(16):
+        s = res.skins[i] if i < len(res.skins) else analyze_skin(os.path.join(folder, f"{stem}{i:02d}.skin"))
+        if s.present and s.magic_ok:
+            skins.append((i, s))
+    lod = [(i, s) for i, s in skins if i > 0 and 0 < s.vertex_span < primary.vertex_span]
+    extra = res.vertices - primary.vertex_span
+
+    if lod and sum(s.vertex_span for _, s in lod) == extra:
+        names = ", ".join(f"{stem}{i:02d}.skin" for i, _ in lod)
+        loaded = [i for i, _ in lod if i < res.n_views]
+        res.findings.append(Finding(check="lod_blocks", severity=Severity.WARN,
+            detail=f"the M2 stores {res.vertices} vertices: skin00's {primary.vertex_span} plus "
+                   f"{len(lod)} modern LOD block(s) ({' + '.join(str(s.vertex_span) for _, s in lod)}) "
+                   f"used by {names}. Those skins still number vertices from 0, so on 3.3.5 they point "
+                   f"into skin00's block. With nViews={res.n_views} the client doesn't load them and the "
+                   f"{extra} extra vertices are simply unused - don't pack those skins or raise nViews "
+                   "to include them."))
+        if loaded:
+            res.findings.append(Finding(check="lod_skin_misaligned", severity=Severity.FAIL,
+                detail=f"nViews={res.n_views} makes the client load "
+                       f"{', '.join(f'{stem}{i:02d}.skin' for i in loaded)}, a modern LOD skin whose "
+                       "vertex numbers point into skin00's block - that LOD renders garbled. "
+                       f"Set nViews to {min(loaded)} or less."))
+        return
+
+    if res.vertices > primary.vertex_span * _LOD_SPAN_RATIO:
+        res.findings.append(Finding(check="lod_unmerged", severity=Severity.FAIL,
+            detail=f"the M2 declares {res.vertices} vertices but skin00 only spans {primary.vertex_span}, "
+                   "and the other skins don't account for the rest: an un-merged multi-LOD export. "
+                   "Re-convert the RAW wow.export model with MultiConverter (Shadowlands-Wotlk if it has "
+                   "a .skel, Legion-Wotlk if not) and check again; if it still mismatches, the LODs need "
+                   "collapsing by hand."))
 
 
 def _check_anims(res: CheckResult, folder: str, stem: str) -> None:

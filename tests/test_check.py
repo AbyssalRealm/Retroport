@@ -133,12 +133,12 @@ def _skin_with_lookup(indices):
     return bytes(s)
 
 
-def _md20_with(n_vertices=0, sequences=(), version=264):
+def _md20_with(n_vertices=0, sequences=(), version=264, n_views=1):
     """MD20 with a vertex count and [(anim_id, sub_id, flags)] sequences."""
     b = bytearray(0x138)
     b[0:4] = b"MD20"
     struct.pack_into("<I", b, S.MD20_VERSION, version)
-    struct.pack_into("<I", b, S.HDR_NUM_SKIN_PROFILES, 1)
+    struct.pack_into("<I", b, S.HDR_NUM_SKIN_PROFILES, n_views)
     _m2a(b, S.HDR_VERTICES, n_vertices, 0)
     seq_off = len(b)
     for anim_id, sub_id, flags in sequences:
@@ -163,6 +163,29 @@ def test_check_flags_unmerged_lod(tmp_path):
 
     (tmp_path / "m00.skin").write_bytes(_skin_with_lookup([0, 999]))      # spans all 1000
     assert _sev(check_model(str(tmp_path / "m.m2")), "lod_unmerged") is None
+
+
+def _stacked_axe(tmp_path, n_views):
+    """The real axe_2h_artifactarathor_d_06 layout: 9090 vertices = skin00's 3067-vertex
+    block + LOD blocks of 2509/1958/1556, each LOD skin numbering from 0."""
+    (tmp_path / "axe.m2").write_bytes(_md20_with(n_vertices=9090, n_views=n_views))
+    for i, span in enumerate((3067, 2509, 1958, 1556)):
+        (tmp_path / f"axe{i:02d}.skin").write_bytes(_skin_with_lookup([0, span - 1]))
+    return check_model(str(tmp_path / "axe.m2"))
+
+
+def test_check_stacked_lod_blocks_warn_not_fail(tmp_path):
+    res = _stacked_axe(tmp_path, n_views=1)
+    assert _sev(res, "lod_blocks") == "warn"
+    assert _sev(res, "lod_unmerged") is None and _sev(res, "lod_skin_misaligned") is None
+    detail = next(f.detail for f in res.report().findings if f.check == "lod_blocks")
+    assert "2509 + 1958 + 1556" in detail and "axe01.skin" in detail
+
+
+def test_check_loading_a_stacked_lod_skin_is_fail(tmp_path):
+    res = _stacked_axe(tmp_path, n_views=4)
+    f = next(f for f in res.report().findings if f.check == "lod_skin_misaligned")
+    assert f.severity.value == "fail" and "Set nViews to 1" in f.detail
 
 
 def test_check_lod_gate_ignores_unconverted_md21(tmp_path):
