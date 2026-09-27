@@ -53,6 +53,34 @@ def test_decode_packed_palette_alpha(tmp_path, depth, plane, expect):
     assert img.getpixel((0, 0))[:3] == (10, 20, 30)                  # BGRA palette -> RGB
 
 
+def _blp1(comp, alpha_bits, size, mip, extra=b""):
+    """BLP1: 'BLP1' + 6 u32 (compression, alphaBits, w, h, pictureType, subType) + 16+16 mip u32s,
+    then `extra` (palette, or u32 JPEG header size + header), then mip 0."""
+    off = 156 + len(extra)
+    head = struct.pack("<4s6I", b"BLP1", comp, alpha_bits, size[0], size[1], 4, 1)
+    return head + struct.pack("<16I", off, *[0] * 15) + struct.pack("<16I", len(mip), *[0] * 15) + extra + mip
+
+
+def test_decode_blp1_palettized_uses_alpha_plane(tmp_path):
+    pal = struct.pack("<BBBB", 30, 20, 10, 0) + b"\x00" * 1020            # BGRA, alpha byte unused
+    data = _blp1(1, 8, (2, 1), bytes([0, 0]) + bytes([255, 7]), pal)
+    p = tmp_path / "p1.blp"; p.write_bytes(data)
+    img = blp.decode(str(p))
+    assert img.getpixel((0, 0)) == (10, 20, 30, 255) and img.getpixel((1, 0))[3] == 7
+
+
+def test_decode_blp1_jpeg_inverted_bgra(tmp_path):
+    import io
+    want = (200, 120, 40, 90)                                          # RGBA
+    r, g, b, a = want
+    cmyk = Image.new("CMYK", (16, 16), (255 - b, 255 - g, 255 - r, 255 - a))   # stored: inverted B,G,R,A
+    buf = io.BytesIO(); cmyk.save(buf, "JPEG", quality=100)
+    data = _blp1(0, 8, (16, 16), buf.getvalue(), struct.pack("<I", 0))  # empty shared header
+    p = tmp_path / "j1.blp"; p.write_bytes(data)
+    got = blp.decode(str(p)).getpixel((8, 8))
+    assert all(abs(x - y) <= 3 for x, y in zip(got, want)), got
+
+
 def test_dxt_picks_format_from_alpha(tmp_path):
     h1 = blp.header(blp.encode_dxt(Image.new("RGBA", (64, 32), (9, 9, 9, 255))))
     h5 = blp.header(blp.encode_dxt(Image.new("RGBA", (64, 32), (9, 9, 9, 100))))

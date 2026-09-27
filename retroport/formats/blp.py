@@ -38,23 +38,55 @@ class BLPError(ValueError):
 def decode(path: str) -> Image.Image:
     """Any BLP the client uses (BLP1/2, palettized/DXT/BGRA) as an RGBA image.
 
-    Palettized and raw-BGRA BLP2 are decoded here: Pillow takes palettized alpha from
-    the palette's 4th byte, but Blizzard stores it as a separate plane after the
-    indices (palette byte 0), so Pillow reads every real alpha texture as fully
-    transparent. DXT and BLP1 go through Pillow."""
+    Palettized and raw-BGRA BLP2, and all BLP1, are decoded here: Pillow takes
+    palettized alpha from the palette's 4th byte, but Blizzard stores it as a
+    separate plane after the indices (palette byte 0), so Pillow reads every real
+    alpha texture as fully transparent (and it can't read BGRA at all). DXT goes
+    through Pillow."""
     with open(path, "rb") as fh:
         data = fh.read()
-    if data[:4] == MAGIC and len(data) >= DATA_START and data[8] in (1, 3):
-        try:
+    try:
+        if data[:4] == MAGIC and len(data) >= DATA_START and data[8] in (1, 3):
             return _decode_uncompressed(data)
-        except (struct.error, ValueError) as exc:
-            raise BLPError(f"{path}: cannot decode BLP ({exc})") from exc
+        if data[:4] == b"BLP1" and len(data) >= BLP1_HEADER:
+            return _decode_blp1(data)
+    except (struct.error, ValueError, OSError) as exc:
+        raise BLPError(f"{path}: cannot decode BLP ({exc})") from exc
     try:
         img = Image.open(io.BytesIO(data))
         img.load()
     except Exception as exc:                      # Pillow raises several types here
         raise BLPError(f"{path}: cannot decode BLP ({exc})") from exc
     return img.convert("RGBA")
+
+
+BLP1_HEADER = 156     # "BLP1" + compression, alphaBits, w, h, pictureType, pictureSubType + 2x16 mip u32s
+
+
+def _decode_blp1(data: bytes) -> Image.Image:
+    """BLP1 (Warcraft III-era). Pillow gets both variants' alpha wrong: palettized
+    alpha is a separate plane (like BLP2), and JPEG files hold four channels that
+    read back as 'CMYK' holding inverted B, G, R, A (Pillow keeps only the colour).
+    Checked on real files: rounded icon corners come out transparent."""
+    comp, alpha_bits, w, h = struct.unpack_from("<4I", data, 4)
+    off, size = struct.unpack_from("<I", data, 28)[0], struct.unpack_from("<I", data, 92)[0]
+    if comp == 1:
+        pal = data[BLP1_HEADER:BLP1_HEADER + 1024]
+        fake = _pack(1, alpha_bits if alpha_bits in (1, 4, 8) else 0, 8, (w, h),
+                     [data[off:off + size]], pal)
+        return _decode_uncompressed(fake)
+    if comp != 0:
+        raise ValueError(f"unknown BLP1 compression {comp}")
+    hsize = struct.unpack_from("<I", data, BLP1_HEADER)[0]
+    jpeg = data[BLP1_HEADER + 4:BLP1_HEADER + 4 + hsize] + data[off:off + size]
+    img = Image.open(io.BytesIO(jpeg))
+    img.load()
+    if img.mode != "CMYK":
+        return img.convert("RGBA")
+    c, m, y, k = (ch.point(lambda v: 255 - v) for ch in img.split())   # inverted B, G, R, A
+    if not alpha_bits:
+        k = Image.new("L", img.size, 255)
+    return Image.merge("RGBA", (y, m, c, k))
 
 
 def _decode_uncompressed(data: bytes) -> Image.Image:
