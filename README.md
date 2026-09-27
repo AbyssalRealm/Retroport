@@ -22,6 +22,8 @@ Division of labor:
 | Diagnose triangles / submeshes / textures / bones / skins / LODs / `.anim` files | **retroport** (check) |
 | Write CreatureModelData + CreatureDisplayInfo rows, repoint SQL | **retroport** (register) |
 | Write ItemDisplayInfo rows (weapons/armor), repoint Item.dbc, item SQL + pack paths | **retroport** (register-item) |
+| Convert every 3.3.5 race/gender variant of a helm (+ `-fixhelm` for classic models) | **retroport** (helms) |
+| Resize armor textures to their body region, shrink/re-encode object textures (BLP2) | **retroport** (textures) |
 | **MD21 → MD20, version → 264, TXID/SFID texture resolution** | **MultiConverter** (external exe) |
 | **`.m2` ↔ `.m2i` + mesh decimation** | **M2Mod** (external exe) **+ Blender** |
 
@@ -99,6 +101,8 @@ retroport check  I:\conv\foo.m2               # WotLK render-blocker diagnostics
 retroport bake  I:\conv\foo.m2 --slot 0=Creature\Foo\foo_skin.blp       # manual texture paths
 retroport bake  I:\conv\foo.m2 --source-m2 I:\extract\foo.m2 --listfile listfile.csv   # auto from TXID
 retroport register --dbc-dir I:\dbc --out I:\patch\DBFilesClient --path Creature\Foo\foo.m2 --m2 I:\conv\foo.m2 --entries 1234
+retroport helms I:\extract\item\objectcomponents\head\helm_foo_hum.m2 --out I:\conv\helms --client classic --multiconverter I:\tools\MultiConverter_Console.exe
+retroport textures I:\extract\item\texturecomponents --out I:\patch --target classic --max-object 512
 retroport register-item --dbc-dir I:\dbc --out I:\patch\DBFilesClient --like-display 782 --from-model I:\extract\axe_foo.m2 --icon INV_Axe_04 --entries 90001 --item-like 1391
 ```
 
@@ -117,6 +121,34 @@ Why `Item.dbc` is touched too: AzerothCore overwrites `item_template.displayid` 
 default), and `creature_equip_template` drops items missing from `Item.dbc`. So `--entries`
 repoints existing Item.dbc rows, and new entries get a row copied from `--item-like`.
 The result lists the in-MPQ paths to pack (model, `00.skin`, texture, icon).
+
+### Helms (`helms`, GUI: Convert > Helm set)
+
+A 3.3.5 helm is one model per race/gender (`<Base>_HuM.m2`, `<Base>_BeF.m2`...);
+ItemDisplayInfo names only `<Base>.mdx`. Modern helms use the same suffixes for the
+classic races, plus separately-named files for races 3.3.5 lacks (skipped). Point it at
+any one variant: it converts all 20 playable-race variants it finds (plus NPC goblin),
+reports the missing ones (those characters show no helm), and prints the model name for
+`register-item`. Export every race variant from wow.export first.
+
+`--client classic` adds MultiConverter's `-fixhelm` (refits modern helms to the classic
+heads); `--client hd` leaves it off for HD character models such as the 3.3.5 HD patch.
+
+### Textures (`textures`, GUI: Textures tab)
+
+- **Armor component textures** (`..._tu_m.blp`, or anything in a `<Section>Texture` folder)
+  are resized to the body region they're composited into and written palettized with
+  8-bit alpha and full mips, the way Blizzard and the HD patch ship them. Classic
+  3.3.5 models use a 256x256 skin (ArmUpper/ArmLower/TorsoUpper/LegUpper/LegLower 128x64,
+  Hand/TorsoLower/Foot 128x32); `--target hd` doubles them for 512x512 HD skins. Output goes
+  to `Item\TextureComponents\<Section>Texture\` with the name to use in ItemDisplayInfo.
+- **Object textures** (weapons, helms...) are copied unchanged when already
+  client-compatible; `--max-object N` shrinks larger ones (re-encoded DXT1/DXT5), and
+  non-power-of-two sizes are fixed.
+
+The BLP writer is checked against real Blizzard headers, and its output against
+BLPConverter. Note that Pillow mis-decodes palettized BLP alpha (it reads the palette's
+4th byte; Blizzard stores alpha as a separate plane), so retroport decodes those itself.
 
 ## Status - validated vs. needs in-client testing
 
@@ -142,8 +174,8 @@ when the M2 carries more than 1.5x the vertices skin00 uses. Models that ship a 
 `_lod` skin trip it; whether that actually breaks a 3.3.5 client is untested.
 
 **Gaps:** MPQ packaging; converting / inlining the external `.anim` files of non-skel
-models; helm per-race models and armor texture resizing; WMOs and doodads; bone pruning
-over the ~256 ceiling.
+models; WMOs and doodads; bone pruning over the ~256 ceiling. Helms and resized armor
+textures still need an in-client check (helm fit with/without `-fixhelm`, texture layout).
 
 **Tool quirk:** MultiConverter reports "No files to convert" when the model path is over
 260 characters (Windows MAX_PATH) - keep output folders short.
@@ -157,11 +189,13 @@ retroport/
   check.py             WotLK render-blocker diagnostics (+ LOD gate, .anim checks)
   dbc.py               WDBC engine, CreatureModelData/DisplayInfo registration, TextureVariations
   itemdbc.py           ItemDisplayInfo + Item.dbc writer, pack paths, prefill from a model
+  helms.py             helm race/gender variant discovery + batch conversion
+  textures.py          armor-region / object texture resize for 3.3.5
   sql.py               AzerothCore creature_template_model repoint SQL
   safeio.py            atomic write-verify-replace, backups
   scan/                chunk-walk classifier
   formats/             binary layer: structs, m2 (MD21), md20 (textures/sequences/bake),
-                       skel, anim, verify (structural problem detectors)
+                       skel, anim, verify (structural problem detectors), blp (BLP2 codec)
   convert/
     skel_reinliner.py  the .skel re-inliner  <- the novel native work
     multiconverter.py  MultiConverter wrapper (console build, output verification)

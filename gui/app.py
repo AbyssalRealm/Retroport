@@ -20,7 +20,7 @@ from PyQt6.QtCore import QSettings
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
     QPushButton, QCheckBox, QSpinBox, QDoubleSpinBox, QLabel, QTabWidget, QTextEdit, QProgressBar,
-    QFileDialog, QMessageBox, QGroupBox,
+    QFileDialog, QMessageBox, QGroupBox, QComboBox,
 )
 
 from retroport.pipeline import PipelineConfig
@@ -69,6 +69,7 @@ class RetroportGUI(QWidget):
         tabs.addTab(self._convert_tab(), "Convert")
         tabs.addTab(self._register_tab(), "Register")
         tabs.addTab(self._item_tab(), "Item")
+        tabs.addTab(self._textures_tab(), "Textures")
         tabs.addTab(self._settings_tab(), "Settings")
         layout.addWidget(tabs)
         self.setLayout(layout)
@@ -101,6 +102,10 @@ class RetroportGUI(QWidget):
                    self.cb_combiner, self.cb_texbake, self.cb_check):
             sh.addWidget(cb)
         stages.setLayout(sh)
+        self.cb_helmset = QCheckBox("Helm set: convert every 3.3.5 race/gender variant of this helm "
+                                    "(-fixhelm for classic models, see Settings)")
+        self.cb_helmset.setToolTip("Picks up <base>_hum.m2, <base>_bef.m2 ... next to the chosen model")
+        form.addRow("", self.cb_helmset)
 
         opts = QHBoxLayout()
         opts.addWidget(QLabel("Clamp submeshes to:"))
@@ -265,6 +270,76 @@ class RetroportGUI(QWidget):
         w.setLayout(v)
         return w
 
+    def _textures_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout()
+        form = QFormLayout()
+        self.tex_inputs = QTextEdit()
+        self.tex_inputs.setPlaceholderText(".blp files or folders, one per line (or use the buttons)")
+        self.tex_inputs.setFixedHeight(90)
+        btns = QHBoxLayout()
+        add_files = QPushButton("Add files..."); add_files.clicked.connect(self._tex_add_files)
+        add_dir = QPushButton("Add folder..."); add_dir.clicked.connect(self._tex_add_dir)
+        btns.addWidget(add_files); btns.addWidget(add_dir); btns.addStretch()
+        form.addRow("Inputs:", self.tex_inputs)
+        form.addRow("", btns)
+        self.tex_out = QLineEdit(self.settings.value("tex_out", ""))
+        form.addRow("Output folder:", _row(self.tex_out, lambda: self._pick_dir(self.tex_out, "Output")))
+        self.tex_target = QComboBox()
+        self.tex_target.addItem("Classic (armor regions 128x64 / 128x32)", "classic")
+        self.tex_target.addItem("HD (armor regions 256x128 / 256x64)", "hd")
+        self.tex_target.setCurrentIndex(max(0, self.tex_target.findData(self.settings.value("client_models", "classic"))))
+        form.addRow("Target:", self.tex_target)
+        self.tex_max = QSpinBox(); self.tex_max.setRange(0, 4096); self.tex_max.setSingleStep(256)
+        self.tex_max.setSpecialValueText("keep size"); self.tex_max.setValue(int(self.settings.value("tex_max", 0) or 0))
+        form.addRow("Shrink weapon/helm textures above:", self.tex_max)
+        run = QPushButton("Convert textures"); run.clicked.connect(self._run_textures)
+        self.tex_log = QTextEdit(); self.tex_log.setReadOnly(True); self.tex_log.setStyleSheet("font-family:Consolas;")
+        note = QLabel("Armor textures (…_tu_m.blp, or in a <Section>Texture folder) are resized to their body "
+                      "region and saved palettized like Blizzard's; everything else is treated as an object "
+                      "texture and only shrunk/re-encoded when needed.")
+        note.setWordWrap(True)
+        v.addLayout(form)
+        v.addWidget(note)
+        v.addWidget(run)
+        v.addWidget(self.tex_log)
+        w.setLayout(v)
+        return w
+
+    def _tex_add_files(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "BLP textures", "", "BLP textures (*.blp)")
+        for f in files:
+            self.tex_inputs.append(f)
+
+    def _tex_add_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "Folder of .blp textures")
+        if d:
+            self.tex_inputs.append(d)
+
+    def _run_textures(self):
+        from retroport.textures import convert_textures
+        paths = [p.strip() for p in self.tex_inputs.toPlainText().splitlines() if p.strip()]
+        out = self.tex_out.text().strip()
+        if not (paths and out):
+            QMessageBox.warning(self, "Missing fields", "Add at least one input and pick an output folder.")
+            return
+        self.settings.setValue("tex_out", out)
+        self.settings.setValue("tex_max", self.tex_max.value())
+        try:
+            results = convert_textures(paths, out, target=self.tex_target.currentData(),
+                                       max_object=self.tex_max.value() or None)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Texture conversion failed", str(exc))
+            return
+        lines = []
+        for r in results:
+            lines.append(f"{r.kind:9} {(r.section or ''):10} {r.source_size[0]}x{r.source_size[1]} -> "
+                         f"{r.size[0]}x{r.size[1]} {r.format:10} {r.output}")
+            if r.dbc_name:
+                lines.append(f"{'':21}ItemDisplayInfo name: {r.dbc_name}")
+            lines += [f"{'':21}! {x}" for x in r.warnings]
+        self.tex_log.setPlainText("\n".join(lines) or "No .blp files found.")
+
     def _settings_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout()
@@ -274,6 +349,13 @@ class RetroportGUI(QWidget):
             le = QLineEdit(self.settings.value(f"tool_{key}", ""))
             self.tool_inputs[key] = le
             form.addRow(label + ":", _row(le, lambda _=False, k=key: self._browse_tool(k)))
+        self.client_models = QComboBox()
+        self.client_models.addItem("Classic 3.3.5 character models (256 skin)", "classic")
+        self.client_models.addItem("HD character models, e.g. 3.3.5 HD patch (512 skin)", "hd")
+        self.client_models.setCurrentIndex(max(0, self.client_models.findData(self.settings.value("client_models", "classic"))))
+        self.client_models.setToolTip("Sets the armor texture size (Textures tab) and whether helms get "
+                                      "MultiConverter's -fixhelm (classic only)")
+        form.addRow("Client character models:", self.client_models)
         self.mc_args_input = QLineEdit(self.settings.value("multiconverter_args", ""))
         self.mc_args_input.setPlaceholderText("(optional) e.g. -fixhelm    -    use {file} to control where the path goes")
         form.addRow("MultiConverter args:", self.mc_args_input)
@@ -289,7 +371,9 @@ class RetroportGUI(QWidget):
     def _browse_model(self):
         f, _ = QFileDialog.getOpenFileName(self, "Select .m2", "", "M2 models (*.m2)")
         if f:
+            from retroport.helms import helm_base
             self.model_input.setText(f)
+            self.cb_helmset.setChecked(bool(helm_base(f)) and os.path.basename(f).lower().startswith("helm"))
             if not self.out_input.text():
                 self.out_input.setText(os.path.join(os.path.dirname(f), "converted"))
 
@@ -382,7 +466,9 @@ class RetroportGUI(QWidget):
         for key, le in self.tool_inputs.items():
             self.settings.setValue(f"tool_{key}", le.text().strip())
         self.settings.setValue("multiconverter_args", self.mc_args_input.text().strip())
-        QMessageBox.information(self, "Saved", "Tool paths saved.")
+        self.settings.setValue("client_models", self.client_models.currentData())
+        self.tex_target.setCurrentIndex(self.tex_target.findData(self.client_models.currentData()))
+        QMessageBox.information(self, "Saved", "Settings saved.")
 
     def _tools(self) -> dict:
         return {key: self.settings.value(f"tool_{key}", "") for key, _l, _f in TOOL_FIELDS}
@@ -419,7 +505,8 @@ class RetroportGUI(QWidget):
         self.run_btn.setEnabled(False)
         self.console.clear()
         self.progress.setValue(0)
-        self.worker = PipelineWorker(cfg)
+        helm_client = self.settings.value("client_models", "classic") if self.cb_helmset.isChecked() else None
+        self.worker = PipelineWorker(cfg, helm_client=helm_client)
         self.worker.log.connect(self.console.append)
         self.worker.progress.connect(self.progress.setValue)
         self.worker.done.connect(self._finished)

@@ -8,6 +8,8 @@
     retroport bake <md20> --slot N=path [--json]     bake in-game texture paths into type-0 slots
     retroport register --dbc-dir --out --path        add CreatureModelData/DisplayInfo rows + SQL
     retroport register-item --dbc-dir --out ...      add an ItemDisplayInfo row (+ Item.dbc repoint) + SQL
+    retroport textures <blp|dir>... --out --target   resize armor/object textures for 3.3.5
+    retroport helms <helm_x_hum.m2> --out ...        convert every 3.3.5 race/gender variant of a helm
 
 Designed to run today against any folder. Point it at a wow.export extraction
 to get a real asset inventory and a list of what still needs conversion.
@@ -557,6 +559,72 @@ def register_item(
         console.print(f"  {p}", markup=False, highlight=False)
     console.print()
     console.print(r.sql, markup=False, highlight=False)
+
+
+@app.command()
+def textures(
+    paths: list[str] = typer.Argument(..., help=".blp files and/or folders of .blp files."),
+    out: str = typer.Option(..., "--out", help="Output root (components go to Item\\TextureComponents\\<Section>Texture\\)."),
+    target: str = typer.Option("classic", "--target", help="Client character models: classic (256 skin) or hd (512 skin)."),
+    max_object: int = typer.Option(0, "--max-object", help="Shrink object (weapon/helm) textures larger than this (0 = keep size)."),
+    section: str = typer.Option(None, "--section", help="Force the body section (ArmUpper, TorsoUpper, ...) for all inputs."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the JSON result envelope to stdout."),
+) -> None:
+    """Resize/re-encode textures for 3.3.5: armor components to their body region, objects capped + DXT."""
+    from pydantic import BaseModel
+    from .textures import convert_textures
+
+    class TexturesOut(BaseModel):
+        results: list
+
+    try:
+        results = convert_textures(paths, out, target=target, max_object=max_object or None, section=section)
+    except (OSError, ValueError) as exc:
+        if json_out:
+            _emit_json("textures", False, None, str(exc))
+        else:
+            console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    if json_out:
+        _emit_json("textures", True, TexturesOut(results=[r.model_dump() for r in results]))
+        raise typer.Exit(code=0)
+    for r in results:
+        what = f"{r.section} " if r.section else ""
+        console.print(f"[green]{r.kind:9}[/] {what}{r.source_size[0]}x{r.source_size[1]} -> "
+                      f"{r.size[0]}x{r.size[1]} {r.format}  {r.output}", highlight=False)
+        if r.dbc_name:
+            console.print(f"           ItemDisplayInfo name: {r.dbc_name}", highlight=False)
+        for w in r.warnings:
+            console.print(f"           [yellow]{w}[/]")
+
+
+@app.command()
+def helms(
+    model: str = typer.Argument(..., help="Any one race/gender variant of the helm (e.g. helm_foo_hum.m2)."),
+    out: str = typer.Option(..., "--out", help="Output folder for all converted variants."),
+    client: str = typer.Option("classic", "--client", help="classic (adds MultiConverter -fixhelm) or hd character models."),
+    multiconverter: str = typer.Option(..., "--multiconverter", help="MultiConverter_Console.exe"),
+    listfile: str = typer.Option("", "--listfile", help="Community listfile.csv (texture baking)."),
+    no_goblin: bool = typer.Option(False, "--no-goblin", help="Skip the NPC-only goblin variants."),
+) -> None:
+    """Convert every 3.3.5 race/gender variant of a helm (one model per race/gender)."""
+    from .helms import convert_helm_set
+
+    try:
+        hs, results = convert_helm_set(model, out, client_models=client,
+                                       tools={"multiconverter": multiconverter, "listfile": listfile},
+                                       include_npc_races=not no_goblin,
+                                       on_log=lambda m: console.print(m, markup=False, highlight=False))
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    bad = [c for c, r in results.items() if not r.ok]
+    console.print(f"\n[bold]{hs.base}[/]: {len(results) - len(bad)}/{len(results)} variant(s) clean"
+                  + (f", [yellow]blockers in {', '.join(bad)}[/]" if bad else ""))
+    if hs.missing:
+        console.print(f"[yellow]missing 3.3.5 variants:[/] {', '.join(hs.missing)}")
+    console.print(f"ItemDisplayInfo model name: {hs.dbc_model}  (register-item --model {hs.dbc_model})")
+    raise typer.Exit(code=1 if bad else 0)
 
 
 def main() -> None:

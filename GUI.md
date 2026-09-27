@@ -55,8 +55,18 @@ Item entries get their Item.dbc row repointed (new ones copy the "Item.dbc row o
 The output lists the new displayId, the paths to pack, and the SQL. See the README's
 *Items* section for why Item.dbc matters on AzerothCore.
 
+**Convert > Helm set** - ticked automatically when you pick a `helm_..._hum.m2`-style
+model: runs every 3.3.5 race/gender variant beside it into the output folder, with
+MultiConverter `-fixhelm` when Settings says the client uses classic character models.
+
+**Textures** - add .blp files/folders, pick an output folder and the target (defaults to
+the Settings choice). Armor component textures are resized to their body region and
+written into `Item\TextureComponents\<Section>Texture\` (palettized, like Blizzard's);
+weapon/helm textures are copied, or shrunk above the size you set.
+
 **Settings** - the external tool exes, saved with QSettings: MultiConverter, M2Mod,
-BLPConverter, MPQ Editor, Blender, and the listfile. These flow into the pipeline
+BLPConverter, MPQ Editor, Blender, and the listfile - plus **Client character models**
+(classic 256 skin / HD 512 skin), which drives helm `-fixhelm` and the texture target. These flow into the pipeline
 as `PipelineConfig.tools`.
 
 ## Using the pipeline without the GUI
