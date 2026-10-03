@@ -340,7 +340,10 @@ def _check_anims(res: CheckResult, folder: str, stem: str) -> None:
                    "expects raw pre-Legion .anim data. Convert them, or re-inline the animations."))
     present = len(res.anim_external) - len(missing)
     if present:
-        res.findings.append(Finding(check="animations", severity=Severity.WARN,
+        # All present and raw is how professionally converted models ship (every one checked):
+        # nothing wrong, just files to remember when packing.
+        ok = not missing and not chunked
+        res.findings.append(Finding(check="animations", severity=Severity.PASS if ok else Severity.WARN,
             detail=f"{res.anim_inline} inline, {len(res.anim_alias)} alias, {len(res.anim_external)} external - "
                    f"pack the {present} .anim file(s) alongside the model."))
 

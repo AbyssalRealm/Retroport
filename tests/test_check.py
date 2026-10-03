@@ -211,6 +211,10 @@ def test_check_classifies_animations_and_missing_files(tmp_path):
     assert _sev(res, "anim_missing") is None
     assert _sev(res, "anim_format") == "warn" and _sev(res, "animations") == "warn"
 
+    (tmp_path / "m0005-01.anim").write_bytes(b"\x00" * 16)            # all present and raw
+    res = check_model(str(tmp_path / "m.m2"))
+    assert _sev(res, "anim_format") is None and _sev(res, "animations") == "pass"
+
 
 def test_check_version_high_bits(tmp_path):
     (tmp_path / "m.m2").write_bytes(_md20_with(version=0x00010108))
