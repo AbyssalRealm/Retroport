@@ -13,6 +13,7 @@
     retroport helms <helm_x_hum.m2> --out ...        convert every 3.3.5 race/gender variant of a helm
     retroport character --bfa ... --race --sex       port a BfA playable race (model, textures, DBC rows)
     retroport race <Race> --bfa --client --out       make it playable: DBCs, create screen, server DBCs + SQL
+    retroport install <package> --client [--apply]   install it without overwriting your customizations
 
 Designed to run today against any folder. Point it at a wow.export extraction
 to get a real asset inventory and a list of what still needs conversion.
@@ -783,6 +784,60 @@ def race_cmd(
     for w in r.warnings:
         console.print(f"  [yellow]warn[/] {w}", highlight=False)
     console.print(f"  install steps: {os.path.join(out, 'INSTALL.txt')}")
+
+
+@app.command(name="install")
+def install_cmd(
+    package: str = typer.Argument(..., help="A `race` output folder (has race.json)."),
+    client: str = typer.Option("", "--client", help="Your 3.3.5a client folder."),
+    patch: str = typer.Option("patch-H.MPQ", "--patch", help="The folder patch under Data\\ to install into."),
+    server_dbc: str = typer.Option("", "--server-dbc", help="The server's DBC folder."),
+    clean: bool = typer.Option(False, "--clean", help="Also move leftover files in the race's folder to the backup."),
+    apply: bool = typer.Option(False, "--apply", help="Actually copy (default: show the plan only)."),
+) -> None:
+    """Install a race package without overwriting anything you customized since the build."""
+    from .race.install import apply_install, plan_install
+
+    try:
+        plan = plan_install(package, client or None, patch, server_dbc or None, clean)
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    counts = plan.count()
+    for a in plan.actions:
+        if a.kind in ("same", "leftover") or (a.kind == "add" and a.rel.startswith("client/Character/")):
+            continue
+        colour = {"stale": "red", "conflict": "red"}.get(a.kind, "white")
+        console.print(f"  [{colour}]{a.kind:8s}[/] {a.target}" + (f"  ({a.detail})" if a.detail else ""),
+                      highlight=False)
+    leftovers = [a for a in plan.actions if a.kind == "leftover"]
+    if leftovers:
+        console.print(f"  [yellow]{len(leftovers)} leftover file(s)[/] in the race folder that the package doesn't "
+                      f"contain (e.g. {leftovers[0].target}) - "
+                      + ("they will be moved to the backup" if clean else "kept; --clean moves them to the backup"),
+                      highlight=False)
+    console.print(f"\nplan: {counts}")
+    if plan.blocked:
+        console.print(f"[red]{len(plan.blocked)} file(s) block the install - nothing was copied.[/]")
+        raise typer.Exit(code=1)
+    if not apply:
+        console.print("dry run - add --apply to install (replaced files are backed up first)")
+        return
+    receipt = apply_install(plan, clean)
+    console.print(f"[green]installed[/]; backups and undo receipt: {receipt}")
+    console.print(f"  undo with: retroport uninstall \"{receipt}\"")
+
+
+@app.command(name="uninstall")
+def uninstall_cmd(receipt: str = typer.Argument(..., help="An installs\\<time>.json receipt.")) -> None:
+    """Undo an `install`: restore what it replaced or moved, remove what it added."""
+    from .race.install import uninstall
+
+    try:
+        console.print(f"[green]undone[/]: {uninstall(receipt)}")
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
 
 
 def main() -> None:

@@ -189,6 +189,9 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
     for sp in skins:
         fixup.clamp_skin_submeshes(sp, 64)
     fixup.clear_combiner_combos(er.output, skins)
+    stripped = fixup.strip_unfilled_texture_layers(er.output, skins)
+    if stripped:
+        log(f"  cloak: dropped the empty emblem layer from {stripped} batch(es) (3.3.5 has no guild-emblem texture)")
 
     if not identity:
         rep = remap_model_uvs(er.output, skins, src, dst, groups)

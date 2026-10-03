@@ -113,6 +113,51 @@ def clamp_skin_submeshes(skin_path: str, max_submeshes: int = 64) -> int:
     return max_submeshes
 
 
+CHARACTER_UNFILLED_TYPES = frozenset({11, 12, 13})   # creature skins: never filled on a player model
+
+
+def strip_unfilled_texture_layers(m2_path: str, skin_paths: list[str],
+                                  unfilled_types: frozenset[int] = CHARACTER_UNFILLED_TYPES) -> int:
+    """Drop trailing texture layers that sample a replaceable texture nothing will fill.
+
+    BfA characters draw the guild-emblem cloak (geoset 1507) as cape texture + emblem
+    layer (types 16-18, which 3.3.5 lacks; the conversion leaves an empty type-11 slot).
+    An empty second layer is drawn wrong, so the batch keeps its first layer only - the
+    same repair as the released Mag'har port. Returns the number of batches changed."""
+    with open(m2_path, "rb") as fh:
+        m2 = fh.read()
+    n_tex, tex_off = S.read_m2array(m2, S.HDR_TEXTURES)
+    unfilled = set()
+    for i in range(n_tex):
+        typ, _flags, name_len, _name_off = struct.unpack_from("<IIII", m2, tex_off + i * 16)
+        if typ in unfilled_types and name_len <= 1:
+            unfilled.add(i)
+    if not unfilled:
+        return 0
+    n_lk, lk_off = S.read_m2array(m2, S.HDR_TEXTURE_LOOKUP)
+    lookup = struct.unpack_from(f"<{n_lk}h", m2, lk_off) if n_lk else ()
+    changed = 0
+    for sp in skin_paths:
+        with open(sp, "rb") as fh:
+            data = bytearray(fh.read())
+        before = bytes(data)
+        bat_cnt, bat_off = S.read_m2array(data, S.SKIN_BATCHES)
+        n = 0
+        for i in range(bat_cnt):
+            rec = bat_off + i * S.M2BATCH
+            count, combo = struct.unpack_from("<HH", data, rec + 0x0E)
+            keep = count
+            while keep > 1 and combo + keep - 1 < len(lookup) and lookup[combo + keep - 1] in unfilled:
+                keep -= 1
+            if keep != count:
+                struct.pack_into("<H", data, rec + 0x0E, keep)
+                n += 1
+        if n:
+            _save_skin(sp, before, bytes(data))
+            changed += n
+    return changed
+
+
 def repair_combiner_header(m2_path: str, original: bytes) -> list[str]:
     """Restore model data that MultiConverter overwrote with the combiner-combos header field.
 

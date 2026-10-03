@@ -256,6 +256,9 @@ patches, locale first on a tie, then the stock chain); `INSTALL.txt` lists each 
 - **SkillRaceClassInfo, SkillLineAbility, Faction** - wherever a race mask includes the
   template, the new race is added (languages, racials, weapon skills, reputations).
 - **EmotesTextSound, VocalUISounds, NameGen** - voices and random names from the look template.
+- **BarberShopStyle** - the race's hair-style and facial-hair rows from BfA's own table (real
+  names, e.g. "Swabbed", "Clydesdale"), limited to the converted variations; the same ids on
+  client and server (the server validates a barber request by row id, race and sex).
 - **CharSections, CharHairGeosets, CharacterFacialHairStyles** - the converted rows, once per id.
 - **Character-create UI** - `MAX_RACES` and race buttons; buttons laid out by faction at
   runtime (rows tighten for a 6th race per side); the race icons from BfA's atlas spliced
@@ -270,6 +273,34 @@ patches, locale first on a tie, then the stock chain); `INSTALL.txt` lists each 
 Rebuild after changes with `--reuse` (skips the character conversion) and, once installed,
 `--replace`, which first removes the previous build of those race ids from the base DBCs.
 A rebuild over an installed package reproduces it exactly (rows, UI files, atlas).
+
+**Installing (`install`)** - the build records a SHA-256 of every file it was built on.
+
+```bash
+retroport install I:\port\KulTiranRace --client "F:\Wrath of the Lich King 3.3.5a (wod models)" \
+    --patch patch-H.MPQ --server-dbc D:\AC\Build\Data\dbc --clean          # plan only
+retroport install ... --apply                                               # do it
+retroport uninstall I:\port\KulTiranRace\installs\<time>.json               # undo
+```
+
+A modified DBC/UI file is installed only while the copy the client (or server) loads is
+still the one the package was built on; if you changed it since, the plan marks it `stale`
+and nothing is copied - rebuild with `--reuse --replace` to fold your changes in. Model
+and texture files replace only copies in the race's own folder; a different file anywhere
+else is a `conflict`. Replaced files (and, with `--clean`, leftovers in the race folder the
+package doesn't contain) go to `<package>\backups\<time>\` first; `uninstall` restores them
+and refuses if you edited an installed file afterwards.
+
+**Cloaks** - BfA characters draw one cloak variant (geoset 1507) as cape texture + guild
+emblem layer (texture types 16-18, which 3.3.5 lacks); the converter drops that empty second
+layer, leaving the cape texture (the same repair as the released Mag'har port). The other
+cloak geosets use the ordinary cape texture (type 2) and work as in 3.3.5.
+
+**Triangle count** - the 21,845 figure is 65,535 indices / 3. Skins past it store the high
+bits of each submesh's index start in its `level` field; independently released ports that
+were confirmed in a live (WarcraftXL) client do the same with 23k-35k triangles (Earthen,
+Haranir), so `check`'s triangle failure on these models should be confirmed in-game before
+reducing anything.
 
 ## Status - validated vs. needs in-client testing
 

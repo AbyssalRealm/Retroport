@@ -41,6 +41,7 @@ HDR_VERTICES = 0x3C            # M2Array<M2Vertex>
 HDR_NUM_SKIN_PROFILES = 0x44   # uint32 nViews (how many .skin files the client loads)
 HDR_TEXTURES = 0x50            # M2Array<M2Texture>
 HDR_MATERIALS = 0x70           # M2Array<M2Material>
+HDR_TEXTURE_LOOKUP = 0x80      # M2Array<int16> (textureCombos: batch texture slot -> texture)
 HDR_TEXTURE_COMBINER_COMBOS = 0x130  # M2Array<uint16>, present only if FLAG_USE_COMBINER_COMBOS
 
 # The WotLK header is 0x130 bytes, or 0x138 with the combiner-combos field; model data starts after it.

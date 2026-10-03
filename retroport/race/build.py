@@ -16,6 +16,7 @@ same race ids, so the output can be rebuilt and re-installed over itself.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -23,20 +24,22 @@ from typing import Callable
 
 from pydantic import BaseModel
 
-from ..character.convert import BfaInstall, CharacterResult, _find_listfile_paths, append_customization, convert_character
+from ..character.convert import (BfaInstall, CharacterResult, _find_listfile_paths, _find_race, append_customization,
+                                 convert_character)
 from ..dbc import DBCError, DBCFile, RawDBC, load_dbc
 from ..formats import blp
 from ..mpq import ClientData
 from ..safeio import write_verified
 from . import glue, icons, sql
-from .tables import (ALLIANCE, FIELDS, HORDE, RaceSpec, add_base_info, add_chr_race, add_displays, add_race_bit,
-                     clone_race_rows, clone_start_outfits, free_ids, playable_races, strip_race)
+from .tables import (ALLIANCE, FIELDS, HORDE, BarberStyle, RaceSpec, add_barber_styles, add_base_info, add_chr_race,
+                     add_displays, add_race_bit, clone_race_rows, clone_start_outfits, free_ids, playable_races,
+                     strip_race)
 
 CLIENT_TABLES = ["ChrRaces", "CharBaseInfo", "CharStartOutfit", "SkillRaceClassInfo", "SkillLineAbility", "Faction",
                  "CreatureModelData", "CreatureDisplayInfo", "CharSections", "CharHairGeosets",
-                 "CharacterFacialHairStyles", "EmotesTextSound", "VocalUISounds", "NameGen"]
+                 "CharacterFacialHairStyles", "EmotesTextSound", "VocalUISounds", "NameGen", "BarberShopStyle"]
 SERVER_TABLES = ["ChrRaces", "CharBaseInfo", "CharStartOutfit", "SkillRaceClassInfo", "SkillLineAbility", "Faction",
-                 "CreatureModelData", "CreatureDisplayInfo", "EmotesTextSound"]
+                 "CreatureModelData", "CreatureDisplayInfo", "EmotesTextSound", "BarberShopStyle"]
 RAW_TABLES = {"CharBaseInfo", "CharStartOutfit"}
 GLUE = "Interface\\GlueXML\\"
 ATLAS = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Races.blp"
@@ -49,6 +52,9 @@ class RaceBuildResult(BaseModel):
     races: list[dict] = []
     displays: dict[str, int] = {}
     client_sources: dict[str, str] = {}
+    # package path -> the file it was built on ({"source", "sha256"}); `install` refuses to
+    # replace a file that no longer matches, so later customizations are never lost
+    bases: dict[str, dict] = {}
     rows: dict[str, dict[str, int]] = {}
     files: list[str] = []
     warnings: list[str] = []
@@ -58,13 +64,18 @@ def _parse(name: str, data: bytes):
     return RawDBC.from_bytes(data, name) if name in RAW_TABLES else load_dbc(data, name, FIELDS[name])
 
 
+def sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 def _is_inside(path: str, parent: str) -> bool:
     path, parent = os.path.normcase(os.path.abspath(path)), os.path.normcase(os.path.abspath(parent))
     return path == parent or path.startswith(parent.rstrip("\\/") + os.sep)
 
 
 def _apply(tables: dict, specs: list[RaceSpec], *, name: str, cfs: str, look: int, ids: tuple[int, int, int, int],
-           characters: dict[int, CharacterResult] | None) -> dict[str, int]:
+           characters: dict[int, CharacterResult] | None,
+           barber: dict[int, list[BarberStyle]] | None = None) -> dict[str, int]:
     """Add every spec to one set of tables (client or server); returns rows touched per table."""
     counts: dict[str, int] = {}
 
@@ -94,6 +105,8 @@ def _apply(tables: dict, specs: list[RaceSpec], *, name: str, cfs: str, look: in
         for t in ("EmotesTextSound", "VocalUISounds", "NameGen"):
             if t in tables:
                 bump(t, clone_race_rows(tables[t], t, look, s.race_id))
+        if barber and "BarberShopStyle" in tables:
+            bump("BarberShopStyle", add_barber_styles(tables["BarberShopStyle"], s.race_id, barber[s.race_id]))
         if characters:
             for sex_id, ch in characters.items():
                 for k, v in append_customization(tables["CharSections"], tables["CharHairGeosets"],
@@ -157,6 +170,7 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
         if hit is None:
             raise DBCError(f"{t}.dbc is not in any archive of the client")
         res.client_sources[t] = hit[0]
+        res.bases[f"client/DBFilesClient/{t}.dbc"] = {"source": hit[0], "sha256": sha256(hit[1])}
         ctables[t] = _parse(t, hit[1])
     stables = {}
     if server_dbc_dir:
@@ -165,7 +179,9 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
             if not os.path.isfile(p):
                 raise DBCError(f"{p} not found - is this the server's DBC folder?")
             with open(p, "rb") as fh:
-                stables[t] = _parse(t, fh.read())
+                data = fh.read()
+            res.bases[f"server/dbc/{t}.dbc"] = {"source": p, "sha256": sha256(data)}
+            stables[t] = _parse(t, data)
 
     if replace:
         for s in specs:
@@ -178,9 +194,15 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
     m_ids, d_ids = free_ids(2, *cmds), free_ids(2, *cdis)
     ids = (m_ids[0], m_ids[1], d_ids[0], d_ids[1])
     res.displays = {"male_model": ids[0], "female_model": ids[1], "male_display": ids[2], "female_display": ids[3]}
+    bfa = BfaInstall(install_dir, dbd_dir, listfile)
+    bfa.fdids.update(_find_listfile_paths(listfile, {f"dbfilesclient/{t}.db2" for t in
+                                                     ("uitextureatlas", "uitextureatlasmember", "globalstrings",
+                                                      "barbershopstyle")}))
+    barbers = [ctables["BarberShopStyle"]] + ([stables["BarberShopStyle"]] if stables else [])
+    barber = _barber_styles(bfa, race, characters, specs, barbers, res.warnings)
     log(f"Client: adding races {[s.race_id for s in specs]} (displays {ids[2]}/{ids[3]})")
     res.rows["client"] = _apply(ctables, specs, name=name, cfs=cfs, look=look_template, ids=ids,
-                                characters=characters)
+                                characters=characters, barber=barber)
     dbc_out = os.path.join(client_out, "DBFilesClient")
     os.makedirs(dbc_out, exist_ok=True)
     for t, d in ctables.items():
@@ -188,7 +210,7 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
     if stables:
         log("Server: adding the same races")
         res.rows["server"] = _apply(stables, specs, name=name, cfs=cfs, look=look_template, ids=ids,
-                                    characters=None)
+                                    characters=None, barber=barber)
         sdir = os.path.join(out_dir, "server", "dbc")
         os.makedirs(sdir, exist_ok=True)
         for t, d in stables.items():
@@ -196,27 +218,32 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
     else:
         res.warnings.append("no server DBC folder given: copy the client's ChrRaces, CharStartOutfit, "
                             "SkillRaceClassInfo, SkillLineAbility, Faction, CreatureDisplayInfo, CreatureModelData "
-                            "and EmotesTextSound changes to the server yourself")
+                            "EmotesTextSound and BarberShopStyle changes to the server yourself")
 
     # --- 3. character-create screen ---
     chr_races = ctables["ChrRaces"]
     max_races = len(playable_races(chr_races))
-    lua = client.read(GLUE + "CharacterCreate.lua").decode("utf-8", "replace")
-    xml = client.read(GLUE + "CharacterCreate.xml").decode("utf-8", "replace")
-    parent = client.read(GLUE + "GlueParent.lua").decode("utf-8", "replace")
-    strings = client.read(GLUE + "GlueStrings.lua").decode("utf-8", "replace")
+
+    def read_base(rel: str) -> bytes:
+        hit = client.find(rel)
+        if hit is None:
+            raise DBCError(f"{rel} is not in any archive of the client")
+        res.bases["client/" + rel.replace("\\", "/")] = {"source": hit[0], "sha256": sha256(hit[1])}
+        return hit[1]
+
+    lua = read_base(GLUE + "CharacterCreate.lua").decode("utf-8", "replace")
+    xml = read_base(GLUE + "CharacterCreate.xml").decode("utf-8", "replace")
+    parent = read_base(GLUE + "GlueParent.lua").decode("utf-8", "replace")
+    strings = read_base(GLUE + "GlueStrings.lua").decode("utf-8", "replace")
 
     work = os.path.join(out_dir, "_work")
     os.makedirs(work, exist_ok=True)
-    atlas_bytes = client.read(ATLAS)
+    atlas_bytes = read_base(ATLAS)
     atlas_path = os.path.join(work, "atlas.blp")
     write_verified(atlas_path, atlas_bytes)
     atlas_img = blp.decode(atlas_path)
     known = glue.icon_coords(lua)
     look_file = chr_races.get_string(chr_races.find_by_id(look_template)[11]).upper()
-    bfa = BfaInstall(install_dir, dbd_dir, listfile)
-    bfa.fdids.update(_find_listfile_paths(listfile, {f"dbfilesclient/{t}.db2" for t in
-                                                     ("uitextureatlas", "uitextureatlasmember", "globalstrings")}))
     icon_coords: dict[str, tuple] = {}
     try:
         atlases = {i: r for i, r in bfa.table("UiTextureAtlas")}
@@ -309,6 +336,29 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
     return res
 
 
+def _barber_styles(bfa: BfaInstall, race: str, characters: dict[int, CharacterResult], specs: list[RaceSpec],
+                   tables: list[DBCFile], warnings: list[str]) -> dict[int, list[BarberStyle]]:
+    """Hair-style and facial-hair barber rows for each race id, named as in BfA and limited to
+    the variations that were converted. Ids are free in every given table (client and server)."""
+    try:
+        bfa_race, _row = _find_race(bfa, race)
+        source = [r for _i, r in bfa.table("BarberShopStyle") if r["Race"] == bfa_race and r["Type"] in (0, 2)]
+    except ValueError as e:
+        warnings.append(f"barber shop: {e}; no barber rows written")
+        return {}
+    have = {(sex, 0): {h["VariationID"] for h in ch.hair} for sex, ch in characters.items()}
+    have.update({(sex, 2): {f["VariationID"] for f in ch.facial} for sex, ch in characters.items()})
+    rows = sorted({(r["Sex"], r["Type"], r["Data"]): r for r in source
+                   if r["Data"] in have.get((r["Sex"], r["Type"]), set())}.values(),
+                  key=lambda r: (r["Sex"], r["Type"], r["Data"]))
+    if not rows:
+        warnings.append("barber shop: BfA has no hair/facial-hair rows for this race")
+        return {}
+    ids = iter(free_ids(len(rows) * len(specs), *tables))
+    return {s.race_id: [BarberStyle(next(ids), r["Type"], r["Sex"], r["Data"], str(r["DisplayName_lang"]),
+                                    float(r.get("Cost_Modifier", 1.0))) for r in rows] for s in specs}
+
+
 def look_row_display(chr_races: DBCFile, race_id: int, sex: int) -> int:
     return chr_races.find_by_id(race_id)[4 + sex]
 
@@ -317,13 +367,19 @@ def _write_install(out_dir: str, res: RaceBuildResult, specs: list[RaceSpec], se
     lines = [f"{res.name} ({res.race}) - playable race package built by retroport", "",
              "Races: " + ", ".join(f"{s.race_id} = {res.name} ({s.faction}, copies race {s.template})" for s in specs),
              f"Base displays: male {res.displays['male_display']}, female {res.displays['female_display']}", "",
-             "CLIENT", "  Copy everything inside client\\ into your top patch, e.g.",
-             "    <WoW>\\Data\\patch-H.MPQ\\  (Character\\, DBFilesClient\\, Interface\\ merge into what is there)",
-             "  The DBCs were built on the copies your client loads (sources below), so they keep",
-             "  everything that was already in them. Replacing the files in patch-H is expected.", "",
+             "INSTALL (recommended): retroport install - it never overwrites a file you changed since",
+             "this build, backs up everything it replaces, and writes an undo receipt:",
+             f"  retroport install \"{out_dir}\" --client <WoW folder> --patch patch-H.MPQ"
+             + (f" --server-dbc \"{server_dbc_dir}\"" if server_dbc_dir else "") + " --clean",
+             "  (shows the plan; add --apply to install; undo: retroport uninstall <installs\\...json>)",
+             "  If it reports 'stale', you changed that file after the build: rebuild with",
+             "  `retroport race ... --reuse --replace` and the package is rebuilt on your current copy.", "",
+             "BY HAND: copy everything inside client\\ into your top folder patch (e.g. Data\\patch-H.MPQ\\);",
+             "  the DBCs were built on the copies your client loads (sources below), so they keep what",
+             "  was in them as long as you haven't changed those files since this build.", "",
              "SERVER"]
     if server_dbc_dir:
-        lines += [f"  1. Back up {server_dbc_dir}, then copy server\\dbc\\*.dbc into it."]
+        lines += [f"  1. server\\dbc\\*.dbc go into {server_dbc_dir} (retroport install does this with backups)."]
     else:
         lines += ["  1. Copy the race DBC changes into the server's DBC folder (no server folder was given)."]
     lines += [f"  2. Apply server\\{res.race}_race.sql to the world database (undo: {res.race}_race_undo.sql).",

@@ -19,6 +19,8 @@ customization labels.
   Faction (57)             2-5 ReputationRaceMask[4]
   EmotesTextSound (5)      0 ID, 2 RaceID      VocalUISounds (7) 0 ID, 2 RaceID
   NameGen (4)              0 ID, 2 RaceID
+  BarberShopStyle (40)     0 ID, 1 Type (0 hair, 2 facial hair), 2-17 DisplayName 18 flags,
+                           19-34 Description 35 flags, 36 CostModifier (float), 37 Race, 38 Sex, 39 Data
 """
 
 from __future__ import annotations
@@ -30,9 +32,10 @@ from ..dbc import DBCError, DBCFile, RawDBC
 
 FIELDS = {"ChrRaces": 69, "CreatureDisplayInfo": 16, "CreatureModelData": 28, "SkillRaceClassInfo": 8,
           "SkillLineAbility": 14, "Faction": 57, "EmotesTextSound": 5, "VocalUISounds": 7, "NameGen": 4,
-          "CharSections": 10, "CharHairGeosets": 6, "CharacterFacialHairStyles": 8}
+          "CharSections": 10, "CharHairGeosets": 6, "CharacterFacialHairStyles": 8, "BarberShopStyle": 40}
 MASK_FIELDS = {"SkillRaceClassInfo": (2,), "SkillLineAbility": (3, 5), "Faction": (2, 3, 4, 5)}
 RACE_ROW_FIELDS = {"EmotesTextSound": 2, "VocalUISounds": 2, "NameGen": 2}
+OWNED_ROW_FIELDS = {**RACE_ROW_FIELDS, "BarberShopStyle": 37}       # rows strip_race removes by race
 ALL_RACES = (0xFFFFFFFF, 0x7FFFFFFF)
 ALLIANCE, HORDE = "Alliance", "Horde"
 
@@ -183,6 +186,33 @@ def clone_race_rows(dbc: DBCFile, table: str, template: int, race_id: int) -> in
     return added
 
 
+# --------------------------------------------------------------------------- barber shop
+
+@dataclass
+class BarberStyle:
+    id: int
+    type: int                    # 0 hair style, 2 facial hair
+    sex: int
+    data: int                    # the CharHairGeosets / CharacterFacialHairStyles VariationID
+    name: str
+    cost: float
+
+
+def add_barber_styles(dbc: DBCFile, race_id: int, styles: list[BarberStyle]) -> int:
+    """BarberShopStyle rows; ids are chosen by the caller so client and server agree (the
+    server validates a barber request by row id, race and sex)."""
+    if any(r[37] == race_id for r in dbc.records):
+        raise DBCError(f"BarberShopStyle already has rows for race {race_id}")
+    name_flags = dbc.records[0][18] if dbc.records else 0
+    for st in styles:
+        if dbc.find_by_id(st.id):
+            raise DBCError(f"BarberShopStyle id {st.id} is already used")
+        s = dbc.add_string(st.name)
+        dbc.add_record([st.id, st.type, *([s] * 16), name_flags, *([0] * 16), name_flags,
+                        struct.unpack("<I", struct.pack("<f", st.cost))[0], race_id, st.sex, st.data])
+    return len(styles)
+
+
 # --------------------------------------------------------------------------- removal (rebuilds)
 
 def strip_race(tables: dict[str, object], race_id: int) -> dict[str, int]:
@@ -217,7 +247,7 @@ def strip_race(tables: dict[str, object], race_id: int) -> dict[str, int]:
     drop("CharSections", lambda r: r[1] != race_id)
     drop("CharHairGeosets", lambda r: r[1] != race_id)
     drop("CharacterFacialHairStyles", lambda r: r[0] != race_id)
-    for name, rf in RACE_ROW_FIELDS.items():
+    for name, rf in OWNED_ROW_FIELDS.items():
         drop(name, lambda r, rf=rf: r[rf] != race_id)
     for name, fields in MASK_FIELDS.items():
         d = tables.get(name)
