@@ -21,7 +21,9 @@ BfA CharSections slots (per wowdev / the BfA tables) and what each becomes:
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import struct
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -51,6 +53,46 @@ OUT_SLOTS = {(1, LOWER): (0, "FaceLower"), (1, UPPER): (1, "FaceUpper"),
 DB2_TABLES = ("ChrRaces", "CharComponentTextureLayouts", "CharComponentTextureSections",
               "CharSections", "TextureFileData", "CharHairGeosets", "CharacterFacialHairStyles")
 CHARSECTIONS_FIELDS, HAIR_FIELDS, FACIAL_FIELDS = 10, 6, 8
+# CharacterFacialHairStyles.Geoset[i] drives geoset group FACIAL_SLOT_GROUPS[i] (from 3.3.5's own
+# rows: Human female piercings are slot 1 -> 3xx, Blood Elf eyes are slot 4 -> 17xx).
+FACIAL_SLOT_GROUPS = (1, 3, 2, 16, 17)
+MANAGED_GEOSET_GROUPS = 19          # 3.3.5 switches groups 0-18 and draws every variant of the rest
+
+
+def unmanaged_geoset_remap(geosets: set[int]) -> dict[int, int | None]:
+    """Groups 3.3.5 never switches (BfA's 20 feet, 22 torso, ...) would draw every variant at
+    once. Keep each group's default variant (xx01, else its lowest) as always-on body (0)."""
+    groups: dict[int, list[int]] = {}
+    for g in geosets:
+        if g // 100 >= MANAGED_GEOSET_GROUPS:
+            groups.setdefault(g // 100, []).append(g)
+    out: dict[int, int | None] = {}
+    for grp, ids in groups.items():
+        keep = grp * 100 + 1 if grp * 100 + 1 in ids else min(ids)
+        out.update({i: (0 if i == keep else None) for i in ids})
+    return out
+
+
+def facial_styles(facial: list[dict], extras: list[dict], eyes_geoset: int | None) -> list[dict]:
+    """3.3.5 CharacterFacialHairStyles rows. BfA keeps female piercings/earrings as extra
+    CharHairGeosets rows (GeosetType 1-3); 3.3.5 shows them through the facial-style slot, so they
+    are folded in by VariationID. ``eyes_geoset`` (e.g. 2 for 1702) switches the eye mesh on in
+    every style, the way 3.3.5 does for Blood Elves."""
+    real = [r for r in facial if any(g > 0 for g in r["Geoset"])]
+    by_var: dict[int, list[int]] = {}
+    if real or not extras:
+        for r in facial:
+            by_var[r["VariationID"]] = [max(g, 0) for g in (list(r["Geoset"]) + [0] * 5)[:5]]
+    for r in extras:
+        if r["GeosetType"] in FACIAL_SLOT_GROUPS:
+            slot = FACIAL_SLOT_GROUPS.index(r["GeosetType"])
+            by_var.setdefault(r["VariationID"], [0] * 5)[slot] = max(r["GeosetID"], 0)
+    if eyes_geoset is not None:
+        by_var.setdefault(0, [0] * 5)
+        for geo in by_var.values():
+            if not geo[4]:
+                geo[4] = eyes_geoset
+    return [{"VariationID": v, "Geoset": geo} for v, geo in sorted(by_var.items())]
 
 
 class CharacterResult(BaseModel):
@@ -192,6 +234,12 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
     stripped = fixup.strip_unfilled_texture_layers(er.output, skins)
     if stripped:
         log(f"  cloak: dropped the empty emblem layer from {stripped} batch(es) (3.3.5 has no guild-emblem texture)")
+    remap = unmanaged_geoset_remap(set(analyze_skin(skins[0]).geosets)) if skins else {}
+    if remap:
+        fixup.remap_geosets(skins, remap)
+        log("  geosets 3.3.5 does not switch: " + ", ".join(f"{g}->{'body' if v == 0 else 'hidden'}"
+                                                            for g, v in sorted(remap.items())))
+    res.files += _extract_fixed_textures(er.output, out_dir, bfa, listfile, work, log)
 
     if not identity:
         rep = remap_model_uvs(er.output, skins, src, dst, groups)
@@ -274,12 +322,20 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
                         slot, part = out_slot
                         row.textures[slot] = write_blp(f"{part}{tag}", img)
         out_rows.append(row)
+    # 3.3.5 colours hair-textured meshes (beard, brows) from the hair row's texture; BfA leaves
+    # bald rows without one, so borrow the same colour from another style
+    by_color = {r.color: r.textures[0] for r in out_rows if r.section == 3 and r.textures[0]}
+    for r in out_rows:
+        if r.section == 3 and not r.textures[0] and r.color in by_color:
+            r.textures[0] = by_color[r.color]
     res.textures = len(cache)
     log(f"  wrote {res.textures} texture(s)")
 
     # --- geosets ---
-    hair = [r for _i, r in bfa.table("CharHairGeosets")
-            if r["RaceID"] == bfa_race_id and r["SexID"] == sex_id]
+    hair_rows = [r for _i, r in bfa.table("CharHairGeosets")
+                 if r["RaceID"] == bfa_race_id and r["SexID"] == sex_id]
+    hair = [r for r in hair_rows if r.get("GeosetType", 0) == 0]          # the hair itself
+    extras = [r for r in hair_rows if r.get("GeosetType", 0) in FACIAL_SLOT_GROUPS]
     skipped = [r for r in hair if r.get("CustomGeoFileDataID") or r.get("HdCustomGeoFileDataID")]
     hair = [r for r in hair if r not in skipped]
     if skipped:
@@ -292,14 +348,18 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
         res.warnings.append(f"hair geosets {missing} are referenced but not in the model")
     res.sections = [{"section": r.section, "variation": r.variation, "color": r.color, "flags": r.flags,
                      "textures": list(r.textures)} for r in out_rows]
-    res.hair = [{"VariationID": r["VariationID"], "GeosetID": r["GeosetID"], "Showscalp": r["Showscalp"]}
+    # BfA sets Showscalp on haired styles too ("draw the scalp under the hair"); in 3.3.5 it
+    # means bald, which hides the hair - so only the bald style (geoset 0) keeps it
+    res.hair = [{"VariationID": r["VariationID"], "GeosetID": r["GeosetID"], "Showscalp": int(r["GeosetID"] == 0)}
                 for r in hair]
-    res.facial = [{"VariationID": r["VariationID"], "Geoset": list(r["Geoset"])} for r in facial]
+    eyes = 2 if 1702 in model_geosets and 1701 not in model_geosets else None
+    res.facial = facial_styles([{"VariationID": r["VariationID"], "Geoset": list(r["Geoset"])} for r in facial],
+                               extras, eyes)
 
     # --- DBCs ---
     if dbc_dir:
         res.rows = _write_dbcs(dbc_dir, os.path.join(out_dir, "DBFilesClient"), race_id, sex_id,
-                               out_rows, hair, facial)
+                               out_rows, res.hair, res.facial)
         res.files += [os.path.join(out_dir, "DBFilesClient", n) for n in
                       ("CharSections.dbc", "CharHairGeosets.dbc", "CharacterFacialHairStyles.dbc")]
         log(f"  DBC rows added: {res.rows}")
@@ -309,6 +369,42 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
                  if f.severity.value != "pass"]
     shutil.rmtree(work, ignore_errors=True)        # source extracts; nothing to pack
     return res
+
+
+FIXED_FDID = re.compile(r"_(\d+)\.blp$", re.I)
+
+
+def _extract_fixed_textures(m2_path: str, out_dir: str, bfa: BfaInstall, listfile: str, work: str,
+                            log: Callable[[str], None]) -> list[str]:
+    """The model's fixed (type 0) textures - eye glow, jewelry - copied from the install.
+    The engine names them (``<model>_<FileDataID>.blp`` or their listfile path) but doesn't
+    write them; a missing one renders green."""
+    with open(m2_path, "rb") as fh:
+        m2 = fh.read()
+    n, off = struct.unpack_from("<II", m2, 0x50)
+    names = []
+    for i in range(n):
+        typ, _flags, ln, lo = struct.unpack_from("<IIII", m2, off + i * 16)
+        if typ == 0 and ln > 1:
+            names.append(m2[lo:lo + ln].split(b"\x00")[0].decode("latin-1"))
+    by_path = _find_listfile_paths(listfile, {nm for nm in names if not FIXED_FDID.search(nm)})
+    written = []
+    for nm in names:
+        dst = os.path.join(out_dir, *nm.replace("/", "\\").split("\\"))
+        if os.path.isfile(dst):
+            continue
+        m = FIXED_FDID.search(nm)
+        fdid = int(m.group(1)) if m else by_path.get(nm.lower().replace("\\", "/"))
+        if not fdid:
+            log(f"  [warn] fixed texture {nm}: not in the listfile, left missing")
+            continue
+        tmp = os.path.join(work, f"fixed_{fdid}.blp")
+        write_verified(tmp, bfa.read(fdid), lambda p: blp.decode(p))
+        with open(tmp, "rb") as fh:
+            written.append(write_verified(dst, fh.read()))
+    if written:
+        log(f"  extracted {len(written)} fixed texture(s) (eye glow, jewelry)")
+    return written
 
 
 def _write_dbcs(dbc_dir: str, out_dir: str, race_id: int, sex_id: int, rows: list[_Row],

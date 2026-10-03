@@ -2,15 +2,20 @@
 
 ``MPQ`` is a minimal MPQ v1/v2 reader (hash and block tables, zlib/bzip2 sectors,
 encrypted files). ``ClientData`` opens every archive of an install and answers
-"which copy of this file does the client actually load?", using the archive
-priority that WarcraftXL mounts (src/host/mpq/MpqStore.cpp), highest first:
+"which copy of this file does the client actually load?", highest priority first:
 
 1. loose override folders - ``Data\\patch*.MPQ`` that are directories, by name, descending;
-2. custom patches ``Data\\patch-<token>.MPQ`` and ``Data\\<loc>\\patch-<loc>-<token>.MPQ``
-   with token 4-999999 or letters, ranked numbers < letters (a < z), the locale archive
-   first on a tie;
-3. the stock chain: patch-<loc>-3, patch-3, patch-<loc>-2, patch-2, patch-<loc>, patch,
+2. custom patches ``Data\\patch-<token>.MPQ`` (token 4-999999 or letters; numbers < letters,
+   a < z);
+3. custom locale patches ``Data\\<loc>\\patch-<loc>-<token>.MPQ``, ranked the same way;
+4. the stock chain: patch-<loc>-3, patch-3, patch-<loc>-2, patch-2, patch-<loc>, patch,
    then the locale and base archives.
+
+Steps 2 and 3 are deliberately not interleaved. WarcraftXL's own host reader ranks a locale
+``patch-enUS-x`` above ``patch-E``, but a real WarcraftXL client (the "wod models" install)
+draws its characters from ``patch-E``'s CharSections, whose textures exist, and not from
+``patch-enUS-x``'s, whose ``*_HD.blp`` textures are in no archive. Building on the latter
+broke every race's customization, so lettered locale patches rank below lettered ones.
 """
 
 from __future__ import annotations
@@ -226,7 +231,7 @@ class ClientData:
                 if rank is not None:
                     custom.append((rank, is_locale, path))
         seen = set()
-        for _rank, _loc, path in sorted(custom, key=lambda t: (t[0], t[1], t[2].lower()), reverse=True):
+        for _rank, _loc, path in sorted(custom, key=lambda t: (not t[1], t[0], t[2].lower()), reverse=True):
             if path.lower() not in seen:
                 seen.add(path.lower())
                 self._open(path, data)
@@ -254,6 +259,16 @@ class ClientData:
                 if data is not None:
                     return label, data
         return None
+
+    def exists(self, name: str) -> bool:
+        rel = name.replace("/", "\\")
+        for _label, src in self.sources:
+            if isinstance(src, str):
+                if os.path.isfile(os.path.join(src, *rel.split("\\"))):
+                    return True
+            elif src.has(rel):
+                return True
+        return False
 
     def read(self, name: str) -> bytes:
         hit = self.find(name)

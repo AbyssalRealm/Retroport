@@ -172,6 +172,8 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
         res.client_sources[t] = hit[0]
         res.bases[f"client/DBFilesClient/{t}.dbc"] = {"source": hit[0], "sha256": sha256(hit[1])}
         ctables[t] = _parse(t, hit[1])
+    _check_charsections_base(client, ctables["CharSections"], res.client_sources["CharSections"],
+                             {s.race_id for s in specs})
     stables = {}
     if server_dbc_dir:
         for t in SERVER_TABLES:
@@ -334,6 +336,20 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
     write_verified(os.path.join(out_dir, "race.json"), res.model_dump_json(indent=1).encode("utf-8"))
     log(f"Done: {out_dir}")
     return res
+
+
+def _check_charsections_base(client: ClientData, cs: DBCFile, source: str, skip_races: set[int],
+                             sample: int = 60) -> None:
+    """Refuse a CharSections whose textures the client doesn't have: building on it would point
+    every existing race at missing textures (green hair, white tusks)."""
+    rows = [r for r in cs.records if r[1] not in skip_races and cs.get_string(r[4])]
+    step = max(1, len(rows) // sample)
+    picked = rows[::step][:sample]
+    missing = [cs.get_string(r[4]) for r in picked if not client.exists(cs.get_string(r[4]))]
+    if picked and len(missing) > len(picked) // 5:
+        raise DBCError(f"the CharSections.dbc taken as the base ({source}) points at textures this client "
+                       f"doesn't have ({len(missing)} of {len(picked)} sampled, e.g. {missing[0]}); it is "
+                       "probably not the copy the game uses - nothing was written")
 
 
 def _barber_styles(bfa: BfaInstall, race: str, characters: dict[int, CharacterResult], specs: list[RaceSpec],

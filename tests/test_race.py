@@ -178,3 +178,62 @@ def test_sql_mirrors_the_template_race():
     assert "SELECT 9001, `BoundingRadius`" in install and "FROM `creature_model_info` WHERE `DisplayID` = 49" in install
     assert "DELETE FROM `playercreateinfo` WHERE `race` = @RACE;" in undo
     assert "`AllowableRaces` & ~@BIT" in undo
+
+
+# --------------------------------------------------------------------------- in-game fixes (first client test)
+
+def test_unmanaged_geoset_groups_keep_one_default_variant():
+    from retroport.character.convert import unmanaged_geoset_remap
+    assert unmanaged_geoset_remap({0, 401, 1702, 2001, 2002, 2201, 2202, 2302, 2303}) == {
+        2001: 0, 2002: None, 2201: 0, 2202: None, 2302: 0, 2303: None}
+
+
+def test_facial_styles_fold_in_piercings_and_switch_eyes_on():
+    from retroport.character.convert import facial_styles
+    female = facial_styles([{"VariationID": 0, "Geoset": [-1] * 5}],
+                           [{"VariationID": 1, "GeosetID": 3, "GeosetType": 2},
+                            {"VariationID": 1, "GeosetID": 4, "GeosetType": 3}], eyes_geoset=2)
+    # slot 1 -> 3xx, slot 2 -> 2xx, slot 4 -> 17xx (as 3.3.5's own Human/Blood Elf rows)
+    assert female == [{"VariationID": 0, "Geoset": [0, 0, 0, 0, 2]}, {"VariationID": 1, "Geoset": [0, 4, 3, 0, 2]}]
+    male = facial_styles([{"VariationID": 0, "Geoset": [0, -1, -1, -1, -1]},
+                          {"VariationID": 1, "Geoset": [2, -1, -1, -1, -1]}], [], eyes_geoset=None)
+    assert male == [{"VariationID": 0, "Geoset": [0, 0, 0, 0, 0]}, {"VariationID": 1, "Geoset": [2, 0, 0, 0, 0]}]
+
+
+def test_remap_geosets_renumbers_and_hides(tmp_path):
+    from retroport.convert.fixup import remap_geosets
+    from retroport.formats import structs as S
+    s = bytearray(0x30)
+    s[0:4] = b"SKIN"
+    so = len(s)
+    for sid in (0, 2001, 2002):
+        rec = bytearray(48)
+        struct.pack_into("<H", rec, 0, sid)
+        s += rec
+    S.write_m2array(s, S.SKIN_SUBMESHES, 3, so)
+    bo = len(s)
+    for sub in (0, 1, 2):
+        rec = bytearray(24)
+        struct.pack_into("<H", rec, 4, sub)
+        s += rec
+    S.write_m2array(s, S.SKIN_BATCHES, 3, bo)
+    p = tmp_path / "x00.skin"
+    p.write_bytes(bytes(s))
+    assert remap_geosets([str(p)], {2001: 0, 2002: None}) == {2001: 1, 2002: 1}
+    out = p.read_bytes()
+    assert [struct.unpack_from("<H", out, so + i * 48)[0] for i in range(3)] == [0, 0, 2002]
+    n, off = S.read_m2array(out, S.SKIN_BATCHES)
+    assert [struct.unpack_from("<H", out, off + i * 24 + 4)[0] for i in range(n)] == [0, 1]
+
+
+def test_lettered_patches_rank_above_lettered_locale_patches(tmp_path, monkeypatch):
+    from retroport import mpq
+    data = tmp_path / "Data"
+    (data / "enUS").mkdir(parents=True)
+    for p in ("enUS/locale-enUS.MPQ", "enUS/patch-enUS-x.MPQ", "patch-E.MPQ", "patch-4.MPQ"):
+        (data / p).write_bytes(b"")
+    (data / "patch-H.MPQ").mkdir()
+    monkeypatch.setattr(mpq, "MPQ", lambda path: path)
+    order = [label for label, _src in mpq.ClientData(str(tmp_path)).sources]
+    assert order == [r"Data\patch-H.MPQ (folder)", "patch-E.MPQ", "patch-4.MPQ",
+                     r"enUS\patch-enUS-x.MPQ", r"enUS\locale-enUS.MPQ"]

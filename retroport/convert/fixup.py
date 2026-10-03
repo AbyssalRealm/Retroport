@@ -158,6 +158,41 @@ def strip_unfilled_texture_layers(m2_path: str, skin_paths: list[str],
     return changed
 
 
+def remap_geosets(skin_paths: list[str], mapping: dict[int, int | None]) -> dict[int, int]:
+    """Renumber submeshes (geoset ids) per ``mapping``; ``None`` hides that geoset by dropping
+    the batches that draw it (the submesh stays, so nothing else shifts). Returns
+    {geoset id: submeshes changed} for the first skin."""
+    report: dict[int, int] = {}
+    for n, sp in enumerate(skin_paths):
+        with open(sp, "rb") as fh:
+            data = bytearray(fh.read())
+        before = bytes(data)
+        sub_cnt, sub_off = S.read_m2array(data, S.SKIN_SUBMESHES)
+        hidden = set()
+        for i in range(sub_cnt):
+            rec = sub_off + i * 48
+            sid = struct.unpack_from("<H", data, rec)[0]
+            if sid in mapping:
+                if n == 0:
+                    report[sid] = report.get(sid, 0) + 1
+                if mapping[sid] is None:
+                    hidden.add(i)
+                else:
+                    struct.pack_into("<H", data, rec, mapping[sid])
+        if hidden:
+            bat_cnt, bat_off = S.read_m2array(data, S.SKIN_BATCHES)
+            kept = bytearray()
+            for i in range(bat_cnt):
+                rec = data[bat_off + i * S.M2BATCH:bat_off + (i + 1) * S.M2BATCH]
+                if struct.unpack_from("<H", rec, 0x04)[0] not in hidden:
+                    kept += rec
+            data[bat_off:bat_off + len(kept)] = kept
+            S.write_m2array(data, S.SKIN_BATCHES, len(kept) // S.M2BATCH, bat_off)
+        if bytes(data) != before:
+            _save_skin(sp, before, bytes(data))
+    return report
+
+
 def repair_combiner_header(m2_path: str, original: bytes) -> list[str]:
     """Restore model data that MultiConverter overwrote with the combiner-combos header field.
 
