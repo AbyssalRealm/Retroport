@@ -20,7 +20,7 @@ Division of labor:
 | Copy/rename `.skin` files to `<model>NN.skin` next to the `.m2` | **retroport** (stage, MultiConverter engine) |
 | Restore the data MultiConverter overwrites with the combiner-combos header | **retroport** (fixup) |
 | Clear a combiner table WotLK can't use + reset batch shaders (black-mesh fix) | **retroport** (fixup) |
-| Clamp submeshes to ~59, set nViews, clear stale anim flags | **retroport** (fixup) |
+| Clamp submeshes to 64, set nViews, clear stale anim flags | **retroport** (fixup) |
 | Bake in-game paths into type-0 texture slots MultiConverter left empty | **retroport** (texbake) |
 | Diagnose triangles / submeshes / textures / bones / skins / LODs / `.anim` files | **retroport** (check) |
 | Write CreatureModelData + CreatureDisplayInfo rows, repoint SQL | **retroport** (register) |

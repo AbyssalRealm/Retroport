@@ -17,7 +17,7 @@ retroport-gui               # or:  python -m gui
 1. Pick the modern `.m2` (as extracted by wow.export, with its `.manifest.json`,
    `.skel`, and `.anim` files beside it).
 2. Pick an output folder (defaults to `<model>/converted`).
-3. Toggle stages, set the submesh clamp (59) and optional nViews, hit **Run**.
+3. Toggle stages, set the submesh clamp (64) and optional nViews, hit **Run**.
 4. Logs stream live; a summary lists each stage's result.
 
 The stages, in order:
@@ -81,7 +81,7 @@ cfg = PipelineConfig(
     model=r"I:/extract/creature/foo/foo.m2",
     out_dir=r"I:/converted/foo",
     tools={"listfile": r"I:/tools/listfile.csv"},   # engine="wotlkconv" is the default
-    clamp_submeshes_to=59,
+    clamp_submeshes_to=64,
 )
 result = Pipeline(cfg, on_log=print).run()
 print(result.ok, result.output_m2)

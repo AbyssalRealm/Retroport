@@ -95,8 +95,8 @@ def test_check_handles_md21_wrapped(tmp_path):
 
 
 def build_skin_overlimit():
-    """A skin over both the triangle (21845) and submesh (59) ceilings."""
-    n_sub, n_bat = 60, 1
+    """A skin over both the triangle (21845) and submesh (64) ceilings."""
+    n_sub, n_bat = 65, 1
     sub_off = 0x30
     bat_off = sub_off + n_sub * S.M2SKINSECTION
     total = bat_off + n_bat * S.M2BATCH
@@ -104,7 +104,7 @@ def build_skin_overlimit():
     s[0:4] = b"SKIN"
     _m2a(s, S.SKIN_VERTICES, 40000, 0)
     _m2a(s, S.SKIN_INDICES, 21846 * 3, 0)              # 21846 triangles -> over 21845
-    _m2a(s, S.SKIN_SUBMESHES, n_sub, sub_off)          # 60 submeshes -> over 59
+    _m2a(s, S.SKIN_SUBMESHES, n_sub, sub_off)          # 65 submeshes -> over 64
     _m2a(s, S.SKIN_BATCHES, n_bat, bat_off)
     for i in range(n_sub):
         struct.pack_into("<H", s, sub_off + i * S.M2SKINSECTION + S.SKINSECTION_ID, i)

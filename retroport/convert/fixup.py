@@ -3,9 +3,10 @@
 These operate on files on disk and are pure-Python (no external tools):
 
 * ``clamp_skin_submeshes`` - drop skin submeshes (and the batches that use them)
-  down to WotLK's ceiling (~59). Modern models carry far more geoset groups than
+  down to WotLK's ceiling (default 64). Modern models carry far more geoset groups than
   WotLK handles; the extras overflow and render wrong. (Concept from RaceBuilder's
-  clamp_skin_submeshes; validate against that proven version on real files.)
+  clamp_skin_submeshes; validate against that proven version on real files.) RaceBuilder used 59; the
+  3.3.5 HD patch's HumanMale ships 61-63 submeshes, so the default is 64.
 * ``clear_stale_anim_flags`` - after full re-inlining there are no .anim files, so
   the header's chunked-anim flags (0x2000 / 0x200000) are stale; clear them.
 * ``set_num_skin_profiles`` - set the M2's nViews to match the skins you shipped.
@@ -72,7 +73,7 @@ def set_num_skin_profiles(m2_path: str, n: int) -> None:
     _save_m2(m2_path, before, bytes(data))
 
 
-def clamp_skin_submeshes(skin_path: str, max_submeshes: int = 59) -> int:
+def clamp_skin_submeshes(skin_path: str, max_submeshes: int = 64) -> int:
     """Truncate a .skin to at most ``max_submeshes`` submeshes and drop batches
     that reference the removed ones. Returns the new submesh count.
 

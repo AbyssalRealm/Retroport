@@ -53,7 +53,7 @@ _WOTLK_BONE_CEILING = 256
 # WotLK index ceiling: uint16 triangle indices -> 65535/3 triangles per the retroport tutorials
 _WOTLK_MAX_TRIANGLES = 21845
 # WotLK practical submesh ceiling (RaceBuilder clamps to this)
-_WOTLK_MAX_SUBMESHES = 59
+_WOTLK_MAX_SUBMESHES = 64
 # M2 vertices beyond this multiple of skin00's span = an un-merged multi-LOD export
 _LOD_SPAN_RATIO = 1.5
 
@@ -243,7 +243,8 @@ def check_model(m2_path: str, skin_dir: str | None = None) -> CheckResult:
                 detail=f"skin00 has {primary.triangles} triangles ({primary.vertices} verts), over WotLK's "
                        f"{_WOTLK_MAX_TRIANGLES} ceiling. Reduce in Blender (M2Mod M2i round-trip) before converting "
                        "or geometry corrupts/drops."))
-        # Submesh ceiling (RaceBuilder clamps to 59).
+        # Submesh ceiling: RaceBuilder clamped to 59, but the 3.3.5 HD patch's HumanMale ships
+        # 61-63 submeshes, so 64 is used until a client test says otherwise.
         if len(primary.geosets) > _WOTLK_MAX_SUBMESHES:
             res.findings.append(Finding(check="submesh_limit", severity=Severity.WARN,
                 detail=f"skin00 has {len(primary.geosets)} submeshes, over WotLK's ~{_WOTLK_MAX_SUBMESHES}. "

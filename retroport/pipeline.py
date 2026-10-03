@@ -56,7 +56,7 @@ class PipelineConfig:
     do_polyreduce: bool = False          # M2Mod->Blender->M2Mod poly reduction (needs both exes)
     do_txid_remove: bool = False         # M2Mod --txid-remove: embed texture paths from the listfile
 
-    clamp_submeshes_to: int = 59
+    clamp_submeshes_to: int = 64
     poly_target_tris: int = 21000        # decimate target (headroom under the 21845 cap)
     poly_hair_ratio: float = 0.4         # decimate hair geosets to this (0 = flat)
     expected_skins: int | None = None   # set nViews to this if given

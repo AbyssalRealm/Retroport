@@ -110,7 +110,7 @@ class RetroportGUI(QWidget):
 
         opts = QHBoxLayout()
         opts.addWidget(QLabel("Clamp submeshes to:"))
-        self.clamp_spin = QSpinBox(); self.clamp_spin.setRange(1, 256); self.clamp_spin.setValue(59)
+        self.clamp_spin = QSpinBox(); self.clamp_spin.setRange(1, 256); self.clamp_spin.setValue(64)
         opts.addWidget(self.clamp_spin)
         opts.addWidget(QLabel("   nViews (0 = leave):"))
         self.nviews_spin = QSpinBox(); self.nviews_spin.setRange(0, 8); self.nviews_spin.setValue(0)
