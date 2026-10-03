@@ -218,8 +218,10 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
             images[fdid] = blp.decode(p)
         return images[fdid]
 
-    def write_blp(name: str, img, folder: str) -> str:
-        rel = "\\".join(["Character", cfs, *([sex_name] if folder == "sex" else []), name + ".blp"])
+    def write_blp(name: str, img) -> str:
+        # Every texture lives in the sex folder under a sex-prefixed name: BfA's male and
+        # female hair/scalp textures differ, so race-level names like Hair01_00 would collide.
+        rel = "\\".join(["Character", cfs, sex_name, f"{stem}{name}.blp"])
         out = os.path.join(out_dir, *rel.split("\\"))
         if out not in cache:
             data = blp.encode_palettized(img)
@@ -240,12 +242,12 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
                     img = image(fd) if identity else convert_composite(image(fd), src, dst, groups)
                     if identity:
                         img = img.resize((dst.width, dst.height), blp.Image.Resampling.LANCZOS)
-                    row.textures[slot] = write_blp(f"{stem}Skin{tag}{suffix}", img, "sex")
+                    row.textures[slot] = write_blp(f"Skin{tag}{suffix}", img)
         else:
             if sec == 3 and mats[0]:
                 fd = fdid_of(mats[0])
                 if fd:
-                    row.textures[0] = write_blp(f"Hair{tag}", image(fd), "race")
+                    row.textures[0] = write_blp(f"Hair{tag}", image(fd))
             by_group: dict = {}
             for slot in range(3):
                 target_sec = REGION_SLOTS.get((sec, slot))
@@ -263,9 +265,7 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
                     out_slot = OUT_SLOTS.get((sec, dsec))
                     if out_slot:
                         slot, part = out_slot
-                        folder = "sex" if sec in (1, 4, 2) else "race"
-                        row.textures[slot] = write_blp(f"{stem}{part}{tag}" if folder == "sex" else f"{part}{tag}",
-                                                       img, folder)
+                        row.textures[slot] = write_blp(f"{part}{tag}", img)
         out_rows.append(row)
     res.textures = len(cache)
     log(f"  wrote {res.textures} texture(s)")

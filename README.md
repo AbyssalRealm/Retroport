@@ -212,7 +212,9 @@ CASC reader).
    as the UVs (so features stay aligned): the skin composite re-assembled, the face and
    facial-hair/scalp overlays squeezed into the FaceUpper+FaceLower block and split.
    All written palettized like Blizzard's (facial hair/scalp with 8-bit alpha - never DXT,
-   which those overlay slots don't accept).
+   which those overlay slots don't accept). Every texture goes in `Character\<Race>\<Sex>\`
+   with a `<Race><Sex>` prefix: BfA's male and female hair/scalp textures differ, so
+   Blizzard-style shared race-folder names (`Hair01_00.blp`) would collide between runs.
 4. **DBC rows** - CharSections, CharHairGeosets and CharacterFacialHairStyles rows for
    `--race-id`, appended to your client's DBCs (refused if that race/sex already has rows).
    Pass one run's `DBFilesClient` as the next run's `--dbc-dir` to collect both sexes.
