@@ -185,6 +185,48 @@ The BLP writer is checked against real Blizzard headers, and its output against
 BLPConverter. Note that Pillow mis-decodes palettized BLP alpha (it reads the palette's
 4th byte; Blizzard stores alpha as a separate plane), so retroport decodes those itself.
 
+### Playable races (`character`)
+
+```bash
+retroport character --bfa "I:\WoW Modding\Clients\WorldofWarcraft BFA" --race KulTiran --sex male \
+    --out I:\port\KulTiranMale --race-id 33 --listfile listfile.csv --dbd I:\WoW Modding\WoWDBDefs\definitions \
+    --dbc-dir I:\WotLK3.3.5_New_HD_Patch_2025-ft-2.0.6\DBFilesClient
+```
+
+Ports one race/sex from a local **BfA (8.x) install** - the last expansion whose
+characters use 3.3.5's customization system (CharSections textures composited into one
+body texture, CharHairGeosets, CharacterFacialHairStyles). Shadowlands+ models add a
+separate face mesh and an eye texture type (19) that 3.3.5 can't fill - the "green faces".
+Tables are read with WoWDBDefs definitions; files straight from the install (wotlkconv's
+CASC reader).
+
+1. **Model** - converted by wotlkconv from the install, fixed up (submesh clamp 64, combiner
+   table check, stale anim flags) and written as `Character\<Race>\<Sex>\<Race><Sex>.m2`.
+2. **Layout remap** - BfA layout 2 (1024x512: every allied race, Goblin, Worgen, Pandaren)
+   keeps the body sections at layout 1's pixel positions and puts a 512x512 face across the
+   right half; 3.3.5 (and BfA layout 1) composites the face bottom-left. Exact section
+   rectangles come from `CharComponentTextureSections`. Only vertices drawn with the body
+   texture (type 1) move; a vertex shared with another texture, or a triangle spanning two
+   regions that move differently, is reported, never guessed at. Layout-1 races skip this.
+3. **Textures** - every CharSections texture for the race/sex, re-laid with the *same* map
+   as the UVs (so features stay aligned): the skin composite re-assembled, the face and
+   facial-hair/scalp overlays squeezed into the FaceUpper+FaceLower block and split.
+   All written palettized like Blizzard's (facial hair/scalp with 8-bit alpha - never DXT,
+   which those overlay slots don't accept).
+4. **DBC rows** - CharSections, CharHairGeosets and CharacterFacialHairStyles rows for
+   `--race-id`, appended to your client's DBCs (refused if that race/sex already has rows).
+   Pass one run's `DBFilesClient` as the next run's `--dbc-dir` to collect both sexes.
+
+`--target classic` writes the 256x256 layout instead of the HD 512x512 one. Adding the race
+itself (ChrRaces, the model path `Character\<Race>\<Sex>\...`, the server side) is up to your
+client/server mod or WarcraftXL.
+
+Verified on BfA Kul Tiran male and female: the head now samples 3.3.5's face region, a
+client-style composite (skin + FaceLower + FaceUpper) with the model's UV wireframe on top
+lines eyes, mouth and ears up exactly, 0 skin vertices shared or outside, 0 straddling
+triangles. Still needed: poly reduction (25,226 / 33,741 triangles vs the 21,845 ceiling)
+and an in-client test.
+
 ## Status - validated vs. needs in-client testing
 
 **Validated end-to-end (real files):** re-inline (self-contained `.m2` incl. the parent-
@@ -232,6 +274,8 @@ retroport/
   dbc.py               WDBC engine, CreatureModelData/DisplayInfo registration, TextureVariations
   itemdbc.py           ItemDisplayInfo + Item.dbc writer, pack paths, prefill from a model
   helms.py             helm race/gender variant discovery + batch conversion
+  character/           BfA playable-race port: layouts (section remap), model (UV remap),
+                       textures (composite/region conversion), convert (orchestration + DBC rows)
   textures.py          armor-region / object texture resize for 3.3.5
   sql.py               AzerothCore creature_template_model repoint SQL
   safeio.py            atomic write-verify-replace, backups

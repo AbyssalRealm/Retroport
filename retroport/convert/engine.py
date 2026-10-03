@@ -86,8 +86,11 @@ def _find_by_basename(roots: list[str], name: str) -> str | None:
 
 
 def scoped_listfile(model_data: bytes, roots: list[str], listfile_path: str | None,
-                    overrides_path: str | None = None):
-    """A wotlkconv Listfile holding only the ids this model (and its skeletons) use."""
+                    overrides_path: str | None = None,
+                    read_fdid: Callable[[int], bytes | None] | None = None):
+    """A wotlkconv Listfile holding only the ids this model (and its skeletons) use.
+    Skeletons are read from disk under ``roots``, or with ``read_fdid`` (e.g. from a
+    game install) when given."""
     from wotlkconv.listfile import Listfile
 
     lf = Listfile(listfile_path or "<none>")
@@ -104,6 +107,11 @@ def scoped_listfile(model_data: bytes, roots: list[str], listfile_path: str | No
         more: set[int] = set()
         for fdid, path in known.items():
             if path.lower().endswith(".skel"):
+                if read_fdid is not None:
+                    skel = read_fdid(fdid)
+                    if skel:
+                        more |= chunk_fdids(skel)
+                    continue
                 found = _find_by_basename(roots, os.path.basename(path.replace("\\", "/")))
                 if found:
                     with open(found, "rb") as fh:
@@ -118,12 +126,13 @@ def scoped_listfile(model_data: bytes, roots: list[str], listfile_path: str | No
 def convert_with_wotlkconv(model_path: str, out_dir: str, *, output_stem: str | None = None,
                            listfile_path: str | None = None, overrides_path: str | None = None,
                            search_roots: list[str] | None = None, options: dict | None = None,
-                           on_log: Callable[[str], None] | None = None) -> EngineResult:
+                           on_log: Callable[[str], None] | None = None, casc=None) -> EngineResult:
     """Convert one model (plus its skins/anims/skeleton) into ``out_dir``.
 
     ``options`` are wotlkconv ``Options`` fields (e.g. ``{"strip_particles": True}``).
     Every file is written through retroport's verified writer; the model must come
-    out structurally clean."""
+    out structurally clean. ``casc`` (a wotlkconv ``CascStorage``) lets skins, skeletons
+    and animations come straight from a game install."""
     log = on_log or (lambda m: None)
     if not available():
         return EngineResult(ok=False, error=INSTALL_HINT)
@@ -134,11 +143,14 @@ def convert_with_wotlkconv(model_path: str, out_dir: str, *, output_stem: str | 
     with open(model_path, "rb") as fh:
         data = fh.read()
     roots = [os.path.dirname(os.path.abspath(model_path)), *(r for r in (search_roots or []) if r)]
-    lf = scoped_listfile(data, roots, listfile_path, overrides_path)
+    reader = None
+    if casc is not None:
+        reader = lambda fdid: casc.try_read_file_id(fdid)[0]   # noqa: E731
+    lf = scoped_listfile(data, roots, listfile_path, overrides_path, read_fdid=reader)
     if listfile_path:
         log(f"  wotlkconv: scoped listfile with {len(lf)} entr{'y' if len(lf) == 1 else 'ies'} for this model")
     opts = Options(**(options or {}))
-    source = AssetSource(lf, roots=roots)
+    source = AssetSource(lf, roots=roots, casc=casc)
     stem = output_stem or os.path.splitext(os.path.basename(model_path))[0]
 
     try:

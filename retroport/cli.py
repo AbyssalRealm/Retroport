@@ -11,6 +11,7 @@
     retroport register-item --dbc-dir --out ...      add an ItemDisplayInfo row (+ Item.dbc repoint) + SQL
     retroport textures <blp|dir>... --out --target   resize armor/object textures for 3.3.5
     retroport helms <helm_x_hum.m2> --out ...        convert every 3.3.5 race/gender variant of a helm
+    retroport character --bfa ... --race --sex       port a BfA playable race (model, textures, DBC rows)
 
 Designed to run today against any folder. Point it at a wow.export extraction
 to get a real asset inventory and a list of what still needs conversion.
@@ -696,6 +697,44 @@ def helms(
         console.print(f"[yellow]missing 3.3.5 variants:[/] {', '.join(hs.missing)}")
     console.print(f"ItemDisplayInfo model name: {hs.dbc_model}  (register-item --model {hs.dbc_model})")
     raise typer.Exit(code=1 if bad else 0)
+
+
+@app.command()
+def character(
+    bfa: str = typer.Option(..., "--bfa", help="A local BfA (8.x) install, e.g. I:\\WoW Modding\\Clients\\WorldofWarcraft BFA."),
+    race: str = typer.Option(..., "--race", help="BfA race by ClientFileString or name, e.g. KulTiran."),
+    sex: str = typer.Option(..., "--sex", help="male or female."),
+    out: str = typer.Option(..., "--out", help="Output root (laid out like the MPQ: Character\\..., DBFilesClient\\)."),
+    race_id: int = typer.Option(33, "--race-id", help="3.3.5 race id for the new race's DBC rows."),
+    listfile: str = typer.Option(..., "--listfile", help="Community listfile.csv."),
+    dbd: str = typer.Option(..., "--dbd", help="WoWDBDefs 'definitions' folder."),
+    dbc_dir: str = typer.Option("", "--dbc-dir", help="Your client's 3.3.5 DBCs (CharSections, CharHairGeosets, "
+                                "CharacterFacialHairStyles) to append rows to."),
+    target: str = typer.Option("hd", "--target", help="hd (512 body texture, e.g. the 3.3.5 HD patch) or classic (256)."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the JSON result envelope to stdout."),
+) -> None:
+    """Port a BfA playable race/sex: model + layout-remapped CharSections textures + DBC rows."""
+    from .character.convert import convert_character
+
+    try:
+        r = convert_character(bfa, race, sex, out, race_id=race_id, listfile=listfile, dbd_dir=dbd,
+                              dbc_dir=dbc_dir or None, target=target,
+                              on_log=None if json_out else (lambda m: console.print(m, markup=False, highlight=False)))
+    except (OSError, ValueError) as exc:
+        if json_out:
+            _emit_json("character", False, None, str(exc))
+        else:
+            console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    if json_out:
+        _emit_json("character", True, r)
+        raise typer.Exit(code=0)
+    console.print(f"\n[green]{r.race} {r.sex}[/] -> race id {r.race_id}: model {r.model}")
+    console.print(f"  {r.textures} texture(s), {len(r.files)} file(s), DBC rows {r.rows or '(no --dbc-dir)'}")
+    for w in r.warnings:
+        console.print(f"  [yellow]warn[/] {w}", highlight=False)
+    for c in r.check:
+        console.print(f"  [red]{c}[/]" if c.startswith("fail") else f"  {c}", highlight=False)
 
 
 def main() -> None:
