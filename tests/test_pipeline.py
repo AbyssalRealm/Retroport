@@ -36,7 +36,7 @@ def _setup_skel_model(tmp_path):
 def test_pipeline_reinlines_without_external_tools(tmp_path):
     model = _setup_skel_model(tmp_path)
     logs = []
-    cfg = PipelineConfig(model=model, out_dir=str(tmp_path / "out"),
+    cfg = PipelineConfig(engine="multiconverter", model=model, out_dir=str(tmp_path / "out"),
                          do_convert=False, do_check=False)
     result = Pipeline(cfg, on_log=logs.append).run()
 
@@ -58,7 +58,7 @@ def test_pipeline_convert_stage_with_faked_multiconverter(tmp_path, monkeypatch)
         return ToolResult(ok=True, stdout="Converting 1 files... Done.")
     monkeypatch.setattr("retroport.pipeline.run_multiconverter", fake_mc)
 
-    cfg = PipelineConfig(model=model, out_dir=str(tmp_path / "out"), do_check=False,
+    cfg = PipelineConfig(engine="multiconverter", model=model, out_dir=str(tmp_path / "out"), do_check=False,
                          tools={"multiconverter": "C:/fake/MultiConverter.exe"},
                          multiconverter_args=["-fixhelm"])
     result = Pipeline(cfg, on_log=lambda m: None).run()
@@ -75,7 +75,7 @@ def test_pipeline_stages_skins_renamed(tmp_path):
         "skins": [{"fileDataID": 5, "file": "beast_lod0.skin"}],
     }))
     out = tmp_path / "out"
-    cfg = PipelineConfig(model=str(src / "beast.m2"), out_dir=str(out),
+    cfg = PipelineConfig(engine="multiconverter", model=str(src / "beast.m2"), out_dir=str(out),
                          do_convert=False, do_fixup=False, do_check=False)
     result = Pipeline(cfg, on_log=lambda m: None).run()
 
@@ -100,7 +100,7 @@ def test_pipeline_polyreduce_runs_when_over_limit(tmp_path, monkeypatch):
         return ReduceResult(True, reduced_m2=str(reduced), detail="reduced 53348->20800")
     monkeypatch.setattr(P, "reduce_model", fake_reduce)
 
-    cfg = PipelineConfig(model=model, out_dir=str(tmp_path / "out"), source="I:/WoWDownPort",
+    cfg = PipelineConfig(engine="multiconverter", model=model, out_dir=str(tmp_path / "out"), source="I:/WoWDownPort",
                          do_convert=False, do_check=False, do_polyreduce=True,
                          poly_target_tris=21000, poly_hair_ratio=0.35,
                          tools={"m2mod": "C:/M2Mod.exe", "blender": "C:/blender.exe"})
@@ -114,7 +114,7 @@ def test_pipeline_polyreduce_runs_when_over_limit(tmp_path, monkeypatch):
 
 def test_pipeline_polyreduce_skips_without_tools(tmp_path):
     model = _setup_skel_model(tmp_path)
-    cfg = PipelineConfig(model=model, out_dir=str(tmp_path / "out"),
+    cfg = PipelineConfig(engine="multiconverter", model=model, out_dir=str(tmp_path / "out"),
                          do_polyreduce=True, do_convert=False, do_check=False, tools={})
     result = Pipeline(cfg, on_log=lambda m: None).run()
     pr = _stage(result, "polyreduce")
@@ -135,7 +135,7 @@ def test_pipeline_txid_remove_step(tmp_path, monkeypatch):
         return ToolResult(ok=True, stdout="ok")
     monkeypatch.setattr(P, "txid_remove", fake_txid)
 
-    cfg = PipelineConfig(model=model, out_dir=str(tmp_path / "out"), source="I:/WoWDownPort",
+    cfg = PipelineConfig(engine="multiconverter", model=model, out_dir=str(tmp_path / "out"), source="I:/WoWDownPort",
                          do_convert=False, do_check=False, do_txid_remove=True,
                          tools={"m2mod": "C:/M2Mod.exe"})
     result = Pipeline(cfg, on_log=lambda m: None).run()
@@ -145,7 +145,7 @@ def test_pipeline_txid_remove_step(tmp_path, monkeypatch):
 
 def test_pipeline_txid_skips_without_m2mod(tmp_path):
     model = _setup_skel_model(tmp_path)
-    cfg = PipelineConfig(model=model, out_dir=str(tmp_path / "out"),
+    cfg = PipelineConfig(engine="multiconverter", model=model, out_dir=str(tmp_path / "out"),
                          do_convert=False, do_check=False, do_txid_remove=True, tools={})
     result = Pipeline(cfg, on_log=lambda m: None).run()
     assert _stage(result, "txid").skipped
@@ -153,7 +153,7 @@ def test_pipeline_txid_skips_without_m2mod(tmp_path):
 
 def test_pipeline_convert_skipped_without_tool(tmp_path):
     model = _setup_skel_model(tmp_path)
-    cfg = PipelineConfig(model=model, out_dir=str(tmp_path / "out"),
+    cfg = PipelineConfig(engine="multiconverter", model=model, out_dir=str(tmp_path / "out"),
                          do_check=False, tools={})
     result = Pipeline(cfg, on_log=lambda m: None).run()
     convert = _stage(result, "convert")
@@ -163,7 +163,7 @@ def test_pipeline_convert_skipped_without_tool(tmp_path):
 
 def test_pipeline_refuses_to_write_into_the_models_folder(tmp_path):
     model = _setup_skel_model(tmp_path)
-    cfg = PipelineConfig(model=model, out_dir=os.path.dirname(model), do_convert=False, do_check=False)
+    cfg = PipelineConfig(engine="multiconverter", model=model, out_dir=os.path.dirname(model), do_convert=False, do_check=False)
     result = Pipeline(cfg, on_log=lambda m: None).run()
     assert not result.ok and not _stage(result, "triage").ok
     assert "own folder" in _stage(result, "triage").detail
@@ -186,7 +186,7 @@ def test_pipeline_texbake_fills_empty_slots_from_txid(tmp_path, monkeypatch):
 
     logs = []
     out = tmp_path / "out"
-    cfg = PipelineConfig(model=str(src / "sword.m2"), out_dir=str(out), do_check=False,
+    cfg = PipelineConfig(engine="multiconverter", model=str(src / "sword.m2"), out_dir=str(out), do_check=False,
                          tools={"multiconverter": "C:/fake/MC.exe", "listfile": str(listfile)})
     result = Pipeline(cfg, on_log=logs.append).run()
 
@@ -201,7 +201,7 @@ def test_pipeline_texbake_fills_empty_slots_from_txid(tmp_path, monkeypatch):
 
 def test_pipeline_texbake_skips_unconverted_model(tmp_path):
     model = _setup_skel_model(tmp_path)
-    cfg = PipelineConfig(model=model, out_dir=str(tmp_path / "out"), do_convert=False, do_check=False)
+    cfg = PipelineConfig(engine="multiconverter", model=model, out_dir=str(tmp_path / "out"), do_convert=False, do_check=False)
     result = Pipeline(cfg, on_log=lambda m: None).run()
     tb = _stage(result, "texbake")
     assert tb.skipped and result.ok

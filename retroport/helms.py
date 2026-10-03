@@ -11,6 +11,8 @@ siblings, keep the 3.3.5 race/gender variants, run each through the pipeline.
 Modern helms are fitted to modern character heads. MultiConverter's ``-fixhelm``
 refits them for the classic 3.3.5 character models; skip it when the client runs
 HD character models (e.g. the 3.3.5 HD patch), which are shaped like the modern ones.
+The wotlkconv engine has no such refit, so classic-model helms need the MultiConverter
+engine.
 """
 
 from __future__ import annotations
@@ -83,6 +85,10 @@ def convert_helm_set(model_path: str, out_dir: str, *, client_models: str = "cla
     mc_args = list(pipeline_options.pop("multiconverter_args", []))
     if client_models == "classic" and "-fixhelm" not in mc_args:
         mc_args.append("-fixhelm")
+        if pipeline_options.get("engine", "wotlkconv") == "wotlkconv":
+            log("NOTE: wotlkconv has no equivalent of MultiConverter's -fixhelm, so these helms keep "
+                "the modern head fit. That suits HD character models; for classic models, convert "
+                "helms with the MultiConverter engine.")
     results: dict[str, PipelineResult] = {}
     for code, path in sorted(hs.variants.items()):
         log(f"=== {hs.base}_{code} ({RACES_335.get(code[:2], NPC_RACES_335.get(code[:2]))} "

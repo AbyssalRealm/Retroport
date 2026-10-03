@@ -49,7 +49,7 @@ def test_convert_helm_set_runs_each_variant(tmp_path, monkeypatch, client, expec
     monkeypatch.setattr("retroport.pipeline.run_multiconverter", fake_mc)
 
     out = tmp_path / "out"
-    hs, results = convert_helm_set(str(src / "helm_plate_q_01_hum.m2"), str(out), client_models=client,
+    hs, results = convert_helm_set(str(src / "helm_plate_q_01_hum.m2"), str(out), client_models=client, engine="multiconverter",
                                    tools={"multiconverter": "C:/fake/MC.exe"}, do_check=False)
     assert sorted(results) == ["huf", "hum"] and all(r.ok for r in results.values())
     assert sorted(seen) == ["helm_plate_q_01_huf.m2", "helm_plate_q_01_hum.m2"]

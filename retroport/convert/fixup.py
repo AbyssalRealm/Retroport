@@ -9,6 +9,9 @@ These operate on files on disk and are pure-Python (no external tools):
 * ``clear_stale_anim_flags`` - after full re-inlining there are no .anim files, so
   the header's chunked-anim flags (0x2000 / 0x200000) are stale; clear them.
 * ``set_num_skin_profiles`` - set the M2's nViews to match the skins you shipped.
+* ``repair_combiner_header`` - restore model data MultiConverter overwrote with the
+  combiner-combos header field (the first array after the header: global loops or sequences).
+* ``clear_combiner_combos`` - clear a combiner-combos table WotLK can't use (black-mesh fix).
 
 Every write goes through ``safeio.write_verified``: the edited bytes land in a
 temp file, are checked for structural problems the input didn't already have,
@@ -21,7 +24,7 @@ import os
 import struct
 
 from ..formats import structs as S
-from ..formats.verify import m2_problems, no_new_problems, skin_problems
+from ..formats.verify import combiner_combos_problem, m2_data_block, m2_problems, no_new_problems, skin_problems
 from ..safeio import write_verified
 
 
@@ -109,10 +112,86 @@ def clamp_skin_submeshes(skin_path: str, max_submeshes: int = 59) -> int:
     return max_submeshes
 
 
-def clear_combiner_combos(m2_path: str, skin_paths: list[str]) -> tuple[bool, int]:
+def repair_combiner_header(m2_path: str, original: bytes) -> list[str]:
+    """Restore model data that MultiConverter overwrote with the combiner-combos header field.
+
+    When it adds combos to a model that had none, MultiConverter sets global flag 0x08 and
+    writes the combos M2Array at 0x130 without moving the data that starts there: the first
+    array after the header. On real models (a 2H axe, hozumonkey) that was the global loops'
+    timestamps; when a model has none it is the sequence table, whose first 8 bytes are
+    sequence 0's id, variation and duration (normally Stand). ``original`` is the model as
+    MultiConverter received it (MD21 or MD20).
+
+    Each array starting inside 0x130-0x137 is restored from it: moved to the end of the file
+    while flag 0x08 is set, so the field keeps the combos, or rewritten in place on a model
+    whose flag was already cleared. Returns the repaired array names ([] for an unconverted
+    model or nothing to repair). Raises ValueError, leaving the file as it was, if the
+    original doesn't hold the same array - nothing is guessed.
+    """
+    with open(m2_path, "rb") as fh:
+        data = bytearray(fh.read())
+    if data[:4] != b"MD20":
+        return []
+    orig = m2_data_block(original)
+    before = bytes(data)
+    combos = bool(S.read_u32(data, S.HDR_GLOBAL_FLAGS) & S.FLAG_USE_COMBINER_COMBOS)
+    field_bytes = slice(S.MD20_HEADER_SIZE, S.MD20_HEADER_SIZE_COMBOS)
+    repaired: list[str] = []
+    for name, field, elem in S.WOTLK_HEADER_ARRAYS:
+        cnt, off = S.read_m2array(data, field)
+        if not cnt or not S.MD20_HEADER_SIZE <= off < S.MD20_HEADER_SIZE_COMBOS:
+            continue
+        end = off + cnt * elem
+        if data[field_bytes] == orig[field_bytes]:
+            if combos:
+                raise ValueError(f"{name}: the original has the same bytes at 0x130, so it can't restore them "
+                                 "(pass the model MultiConverter was given, not its output)")
+            continue                    # flag clear and nothing overwritten
+        if (S.read_m2array(orig, field) != (cnt, off) or end > len(orig) or end > len(data)
+                or data[S.MD20_HEADER_SIZE_COMBOS:end] != orig[S.MD20_HEADER_SIZE_COMBOS:end]):
+            raise ValueError(f"{name}: the original model doesn't hold the same data, so it can't be restored "
+                             "(for a .skel model, re-run the pipeline instead)")
+        if combos:
+            data += b"\0" * (-len(data) % 16)
+            S.write_m2array(data, field, cnt, len(data))
+            data += orig[off:end]
+        else:
+            data[off:end] = orig[off:end]
+        repaired.append(name)
+    if repaired:
+        _save_m2(m2_path, before, bytes(data))
+    return repaired
+
+
+def _read_skins(skin_paths: list[str]) -> list[bytes]:
+    out: list[bytes] = []
+    for sp in skin_paths:
+        try:
+            with open(sp, "rb") as fh:
+                out.append(fh.read())
+        except OSError:
+            continue
+    return out
+
+
+def combiner_status(m2_path: str, skin_paths: list[str]) -> str | None:
+    """None if the model doesn't set flag 0x08, "" if its combiner-combos table is usable
+    on WotLK, otherwise the reason it isn't."""
+    with open(m2_path, "rb") as fh:
+        data = fh.read()
+    if not S.read_u32(m2_data_block(data), S.HDR_GLOBAL_FLAGS) & S.FLAG_USE_COMBINER_COMBOS:
+        return None
+    return combiner_combos_problem(data, _read_skins(skin_paths)) or ""
+
+
+def clear_combiner_combos(m2_path: str, skin_paths: list[str], keep_valid: bool = True) -> tuple[bool, int]:
     """Clear the texture-combiner-combos global flag (0x08) and normalise batch
-    shaders - the common fix for Shadowlands models rendering black on WotLK, where
-    M2Batch.shader is otherwise read as an index into the combiner-combos table.
+    shaders - the fix for models rendering black on WotLK, where M2Batch.shader is
+    read as an index into a combiner-combos table that doesn't fit.
+
+    With ``keep_valid`` a usable table (see ``verify.combiner_combos_problem``) is left
+    alone, flag and shaders both: WotLK renders it like Blizzard's own models, and clearing
+    it would drop texture blending such as env-mapped reflections.
 
     Shaders are normalised in place: 0x8000 ("do not render") is preserved, and any
     other non-zero value (a combo index that is meaningless on WotLK) is reset to 0,
@@ -123,6 +202,9 @@ def clear_combiner_combos(m2_path: str, skin_paths: list[str]) -> tuple[bool, in
     start, _ = _data_block_bounds(data)
     off = start + S.HDR_GLOBAL_FLAGS
     flags = struct.unpack_from("<I", data, off)[0]
+    if (keep_valid and flags & S.FLAG_USE_COMBINER_COMBOS
+            and combiner_combos_problem(bytes(data), _read_skins(skin_paths)) is None):
+        return False, 0
     flag_cleared = bool(flags & S.FLAG_USE_COMBINER_COMBOS)
     if flag_cleared:
         before = bytes(data)

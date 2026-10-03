@@ -94,10 +94,35 @@ class BakePlan:
     no_id: list[int] = field(default_factory=list)               # empty type-0 slots with no TXID entry
 
 
+_PLACEHOLDER = re.compile(r"^unknown[\\/](\d+)\.blp$", re.I)
+
+
+def placeholder_fdid(name: str) -> int | None:
+    """The FileDataID in wotlkconv's stand-in path for an unresolved texture
+    (``unknown\\<fdid>.blp``), or None for a real path."""
+    m = _PLACEHOLDER.match(name or "")
+    return int(m.group(1)) if m else None
+
+
+def _unresolved_fdid(slot, txid: list[int]) -> int | None:
+    """For a type-0 slot that still needs a path: its FileDataID (0 if unknown).
+    None if the slot already has a real path."""
+    if slot.type != 0:
+        return None
+    if slot.name:
+        return placeholder_fdid(slot.name)
+    return txid[slot.index] if slot.index < len(txid) else 0
+
+
 def empty_slot_fdids(md20: bytes, txid: list[int]) -> list[int]:
-    """FileDataIDs of the type-0 slots that still have no path (what the listfile must resolve)."""
-    return [txid[t.index] for t in read_texture_slots(md20)
-            if t.type == 0 and not t.name and t.index < len(txid) and txid[t.index]]
+    """FileDataIDs of the type-0 slots that still have no real path - empty, or
+    wotlkconv's unknown\\<fdid>.blp placeholder (what the listfile must resolve)."""
+    out = []
+    for t in read_texture_slots(md20):
+        fdid = _unresolved_fdid(t, txid)
+        if fdid:
+            out.append(fdid)
+    return out
 
 
 def resolve_fdids(fdids, listfile_path: str | None, overrides_path: str | None = None) -> dict[int, str]:
@@ -122,9 +147,9 @@ def plan_bake(md20: bytes, txid: list[int], known: dict[int, str] | None,
     slots, then explicit per-slot paths on top."""
     plan = BakePlan()
     for slot in read_texture_slots(md20):
-        if slot.type != 0 or slot.name:
+        fdid = _unresolved_fdid(slot, txid)
+        if fdid is None:
             continue
-        fdid = txid[slot.index] if slot.index < len(txid) else 0
         if not fdid:
             plan.no_id.append(slot.index)
             continue

@@ -43,6 +43,24 @@ HDR_TEXTURES = 0x50            # M2Array<M2Texture>
 HDR_MATERIALS = 0x70           # M2Array<M2Material>
 HDR_TEXTURE_COMBINER_COMBOS = 0x130  # M2Array<uint16>, present only if FLAG_USE_COMBINER_COMBOS
 
+# The WotLK header is 0x130 bytes, or 0x138 with the combiner-combos field; model data starts after it.
+MD20_HEADER_SIZE = 0x130
+MD20_HEADER_SIZE_COMBOS = 0x138
+WOTLK_MAX_COMBINER_VALUE = 7   # combo entries are blend modes; Blizzard's 3.3.5 models use 0-7
+
+# Every M2Array in the WotLK MD20 header: (name, header offset, WotLK element size).
+WOTLK_HEADER_ARRAYS = (
+    ("name", 0x08, 1), ("global_loops", 0x14, 4), ("sequences", 0x1C, 64), ("sequence_lookups", 0x24, 2),
+    ("bones", 0x2C, 88), ("key_bone_lookup", 0x34, 2), ("vertices", 0x3C, 48), ("colors", 0x48, 40),
+    ("textures", 0x50, 16), ("texture_weights", 0x58, 20), ("texture_transforms", 0x60, 60),
+    ("replaceable_texture_lookup", 0x68, 2), ("materials", 0x70, 4), ("bone_lookup", 0x78, 2),
+    ("texture_lookup", 0x80, 2), ("texture_coord_lookup", 0x88, 2), ("texture_weight_lookup", 0x90, 2),
+    ("texture_transform_lookup", 0x98, 2), ("collision_indices", 0xD8, 2), ("collision_vertices", 0xE0, 12),
+    ("collision_normals", 0xE8, 12), ("attachments", 0xF0, 40), ("attachment_lookup", 0xF8, 2),
+    ("events", 0x100, 36), ("lights", 0x108, 156), ("cameras", 0x110, 100), ("camera_lookup", 0x118, 2),
+    ("ribbon_emitters", 0x120, 176), ("particle_emitters", 0x128, 476),
+)
+
 FLAG_USE_COMBINER_COMBOS = 0x08      # global_flags: M2Batch.shader is an index into the combiner-combos table
 
 # M2Texture record (in the MD20 data block)

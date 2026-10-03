@@ -55,6 +55,54 @@ def _array_ok(buf: bytes, count: int, offset: int, elem: int) -> bool:
     return count == 0 or (offset + count * elem <= len(buf))
 
 
+def combiner_header_overlaps(block: bytes) -> list[str]:
+    """Header arrays whose data starts inside the combiner-combos field (0x130-0x137) while
+    global flag 0x08 has the client read those 8 bytes as that field, so the data's first
+    bytes are lost. MultiConverter does this when it adds combos to a model that had none."""
+    if len(block) < S.MD20_HEADER_SIZE_COMBOS:
+        return []
+    if not S.read_u32(block, S.HDR_GLOBAL_FLAGS) & S.FLAG_USE_COMBINER_COMBOS:
+        return []
+    out: list[str] = []
+    for name, field, _elem in S.WOTLK_HEADER_ARRAYS:
+        cnt, off = S.read_m2array(block, field)
+        if cnt and S.MD20_HEADER_SIZE <= off < S.MD20_HEADER_SIZE_COMBOS:
+            out.append(name)
+    return out
+
+
+def combiner_combos_problem(m2: bytes, skins: list[bytes]) -> str | None:
+    """Why a model's combiner-combos table (global flag 0x08) can't be used on WotLK, or
+    None if it can. Blizzard's own 3.3.5 models use such a table in about one model in
+    eight, most often [1, 4]: a texture plus an env-mapped reflection. ``skins`` are the
+    bytes of the model's .skin files, whose batch shaders index the table."""
+    block = m2_data_block(m2)
+    cnt, off = S.read_m2array(block, S.HDR_TEXTURE_COMBINER_COMBOS)
+    if not cnt:
+        return "the combiner-combos table is empty"
+    if off < S.MD20_HEADER_SIZE_COMBOS or off + 2 * cnt > len(block):
+        return "the combiner-combos table lies outside the model data"
+    overlaps = combiner_header_overlaps(block)
+    if overlaps:
+        return f"{', '.join(overlaps)} data overlaps the combiner-combos header field"
+    bad = sorted({v for v in struct.unpack_from(f"<{cnt}H", block, off) if v > S.WOTLK_MAX_COMBINER_VALUE})
+    if bad:
+        return f"combo values {bad} are not WotLK blend modes (0-{S.WOTLK_MAX_COMBINER_VALUE})"
+    for skin in skins:
+        if skin[:4] != S.SKIN_MAGIC:
+            continue
+        b_cnt, b_off = S.read_m2array(skin, S.SKIN_BATCHES)
+        for i in range(b_cnt):
+            rec = b_off + i * S.M2BATCH
+            if rec + S.M2BATCH > len(skin):
+                break
+            shader, = struct.unpack_from("<H", skin, rec + S.BATCH_SHADER)
+            tex_count, = struct.unpack_from("<H", skin, rec + S.BATCH_TEXTURE_COUNT)
+            if not shader & 0x8000 and shader + tex_count > cnt:
+                return f"batch shader {shader} with {tex_count} texture(s) reads past the {cnt}-entry combo table"
+    return None
+
+
 def m2_problems(data: bytes) -> set[str]:
     """Structural problems in an M2 (MD20 or MD21): bad magic, header arrays or
     texture-name strings that run past the data block."""
@@ -69,6 +117,8 @@ def m2_problems(data: bytes) -> set[str]:
         cnt, off = S.read_m2array(block, field)
         if not _array_ok(block, cnt, off, elem):
             out.add(f"{name} array runs past end of data")
+    for name in combiner_header_overlaps(block):
+        out.add(f"{name} data overlaps the combiner-combos header field")
     t_cnt, t_off = S.read_m2array(block, S.HDR_TEXTURES)
     if _array_ok(block, t_cnt, t_off, S.M2TEXTURE):
         for i in range(t_cnt):

@@ -6,9 +6,12 @@ No Qt or UI imports here - this is the testable brain.
 
 Stages (each can be toggled):
     triage    -> classify the model (inspect)
-    reinline  -> fold .skel/.anim into the M2 (library)          [.skel models]
-    convert   -> MultiConverter MD21->MD20 (external exe)
-    fixup     -> clear stale anim flags, clamp submeshes, set nViews
+    reinline  -> fold .skel/.anim into the M2 (library)          [.skel models, MultiConverter engine]
+    convert   -> MD21->MD20 with the configured engine:
+                 wotlkconv (default, native Python: merges .skel/.anim, converts and
+                 renames skins/anims itself) or the MultiConverter exe
+    fixup     -> restore data MultiConverter overwrote at 0x130, clear stale anim flags,
+                 clamp submeshes, clear unusable combiner combos, set nViews
     texbake   -> bake texture paths into empty type-0 slots (library)
     check     -> WotLK render-blocker diagnostics (library)
 
@@ -33,6 +36,7 @@ from .convert.multiconverter import run_multiconverter
 from .convert.m2mod import reduce_model, txid_remove
 from .convert import fixup as fixup_mod
 from .convert import texbake
+from .convert import engine
 from .formats.verify import VerifyError
 from .safeio import backup_files, same_dir
 from .check import check_model, CheckResult, analyze_skin
@@ -57,9 +61,11 @@ class PipelineConfig:
     poly_hair_ratio: float = 0.4         # decimate hair geosets to this (0 = flat)
     expected_skins: int | None = None   # set nViews to this if given
     multiconverter_args: list[str] = field(default_factory=list)   # just the path by default; add -fixhelm etc. if needed
-    fix_combiner: bool = True            # clear the combiner-combos flag (black-mesh fix)
+    fix_combiner: bool = True            # clear a combiner-combos table WotLK can't use (black-mesh fix)
     do_texbake: bool = True              # bake listfile paths into empty type-0 texture slots
     texture_paths: dict[int, str] = field(default_factory=dict)   # explicit slot -> in-game .blp path (wins)
+    engine: str = "wotlkconv"            # "wotlkconv" (native) or "multiconverter" (exe)
+    engine_options: dict = field(default_factory=dict)   # wotlkconv Options fields, e.g. {"strip_particles": True}
 
 
 @dataclass
@@ -97,6 +103,10 @@ class Pipeline:
     def run(self) -> PipelineResult:
         cfg = self.cfg
         res = PipelineResult()
+        if cfg.engine not in ("wotlkconv", "multiconverter"):
+            res.add(StageResult("config", False, f"unknown engine '{cfg.engine}' (wotlkconv or multiconverter)"))
+            self._log(f"Refusing to run: unknown engine '{cfg.engine}'.")
+            return res
         model_dir = os.path.dirname(os.path.abspath(cfg.model))
         if os.path.isdir(cfg.out_dir) and same_dir(cfg.out_dir, model_dir):
             res.add(StageResult("triage", False, "output folder is the model's own folder - pick a "
@@ -139,11 +149,16 @@ class Pipeline:
                     res.add(StageResult("polyreduce", False, rr.detail))
                     self._log("  Continuing un-reduced; check will still flag the poly wall.")
 
+        native = self._native_engine()
+
         # --- stage sibling assets (skins, and .anim for non-skel) into out_dir ---
         # MultiConverter needs the .skin files next to the .m2, and the client looks
         # for <stem>NN.skin - so copy them in, renamed to the WotLK convention.
-        staged = self._stage_assets(model_in, info.uses_skel)
-        if staged:
+        # wotlkconv finds, converts and renames them itself.
+        staged = [] if native else self._stage_assets(model_in, info.uses_skel)
+        if native:
+            res.add(StageResult("stage", True, "wotlkconv writes the skins/anims", skipped=True))
+        elif staged:
             self._log(f"Staged {len(staged)} asset(s): {', '.join(staged[:6])}"
                       + (" ..." if len(staged) > 6 else ""))
             res.add(StageResult("stage", True, f"{len(staged)} file(s)"))
@@ -183,8 +198,10 @@ class Pipeline:
                     res.add(StageResult("txid", False, tr.stderr or "txid produced no output"))
                     self._log("  Continuing with un-fixed texture paths.")
 
-        # --- reinline (only if .skel-based) ---
-        if cfg.do_reinline and info.uses_skel:
+        # --- reinline (only if .skel-based; wotlkconv merges the skeleton itself) ---
+        if native and info.uses_skel:
+            res.add(StageResult("reinline", True, "wotlkconv merges the .skel/.anim", skipped=True))
+        elif cfg.do_reinline and info.uses_skel:
             self._log("Re-inline: folding .skel/.anim into the M2...")
             self._progress(20)
             skel_loader, anim_loader = self._loaders()
@@ -197,16 +214,31 @@ class Pipeline:
             working_m2 = cr.output or working_m2
             res.add(StageResult("reinline", True, os.path.basename(working_m2)))
         else:
-            if not os.path.exists(working_m2):
+            if not os.path.exists(working_m2) and not native:
                 shutil.copy2(model_in, working_m2)
             reason = "no .skel" if not info.uses_skel else "disabled"
             res.add(StageResult("reinline", True, f"skipped ({reason})", skipped=True))
 
         # TXID (texture FileDataIDs) is gone after MD21->MD20, so read it now for texbake.
-        txid = texbake.read_txid(working_m2) or texbake.read_txid(cfg.model)
+        txid = texbake.read_txid(model_in if native else working_m2) or texbake.read_txid(cfg.model)
+        # MultiConverter can overwrite the start of the model's data with the combiner-combos
+        # header field; fixup restores it from the model as MultiConverter received it.
+        pre_convert = b""
+
+        # --- convert (wotlkconv) ---
+        if cfg.do_convert and native:
+            self._progress(50)
+            stage = self._convert_native(model_in, working_m2)
+            res.add(stage)
+            if not stage.ok:
+                return res
+        elif native:
+            # Nothing converted: keep the model in out_dir so fixup/check have a file to look at.
+            if not os.path.exists(working_m2):
+                shutil.copy2(model_in, working_m2)
 
         # --- convert (MultiConverter) ---
-        if cfg.do_convert:
+        if cfg.do_convert and not native:
             exe = cfg.tools.get("multiconverter")
             if not exe:
                 res.add(StageResult("convert", False, "no MultiConverter path set", skipped=True))
@@ -218,6 +250,8 @@ class Pipeline:
                 # skeleton - i.e. we did NOT already re-inline it ourselves.
                 mc_reinlines = info.uses_skel and not cfg.do_reinline
                 self._log(f"  args: {' '.join([os.path.basename(working_m2), *cfg.multiconverter_args])}")
+                with open(working_m2, "rb") as fh:
+                    pre_convert = fh.read()
                 tr = run_multiconverter(exe, working_m2, extra_args=cfg.multiconverter_args,
                                         expect_growth=mc_reinlines)
                 if tr.stdout.strip():
@@ -249,7 +283,7 @@ class Pipeline:
         if cfg.do_fixup:
             self._log("Fixup: cleaning flags / clamping submeshes...")
             self._progress(70)
-            notes, rejected = self._fixup(working_m2)
+            notes, rejected = self._fixup(working_m2, pre_convert)
             detail = "; ".join(notes) or "no changes"
             if rejected:
                 detail += f" | {len(rejected)} edit(s) rejected by verification"
@@ -350,6 +384,44 @@ class Pipeline:
         root = self.cfg.source or os.path.dirname(self.cfg.model)
         return make_file_id_loader(root, ".skel"), make_file_id_loader(root, ".anim")
 
+    def _native_engine(self) -> bool:
+        return self.cfg.engine == "wotlkconv"
+
+    def _convert_native(self, model_in: str, working_m2: str) -> StageResult:
+        """MD21 -> MD20 with wotlkconv; its skins/anims land in out_dir under the 3.3.5 names."""
+        if not engine.available():
+            self._log(f"Convert: {engine.INSTALL_HINT}")
+            return StageResult("convert", False, "wotlkconv not installed")
+        self._log("Convert: wotlkconv (MD21->MD20, skeleton, skins, anims)...")
+        roots: list[str] = []
+        for r in (os.path.dirname(os.path.abspath(model_in)), os.path.dirname(os.path.abspath(self.cfg.model)),
+                  self.cfg.source):
+            if r and os.path.isdir(r) and r not in roots:
+                roots.append(r)
+        lf = self.cfg.tools.get("listfile")
+        r = engine.convert_with_wotlkconv(
+            model_in, self.cfg.out_dir,
+            output_stem=os.path.splitext(os.path.basename(working_m2))[0],
+            listfile_path=lf if lf and os.path.isfile(lf) else None,
+            overrides_path=self._overrides_csv(), search_roots=roots,
+            options=self.cfg.engine_options, on_log=self._log)
+        model_name = os.path.basename(model_in)
+        for n in r.notes:
+            if n.level != "info":
+                where = "" if n.file == model_name else f" ({n.file})"
+                self._log(f"  [{n.level}] {n.code}: {n.message}{where}")
+        infos = sum(1 for n in r.notes if n.level == "info")
+        if infos:
+            self._log(f"  ({infos} info note(s): {', '.join(sorted({n.code for n in r.notes if n.level == 'info'})[:6])})")
+        if not r.ok:
+            self._log(f"  wotlkconv failed: {r.error}")
+            return StageResult("convert", False, r.error)
+        post = classify_file(working_m2)
+        self._log(f"  wrote {len(r.written)} file(s); post-convert: chunked={post.chunked} version={post.version}")
+        if post.chunked or post.version != 264:
+            return StageResult("convert", False, f"output is not MD20 v264 (chunked={post.chunked}, v{post.version})")
+        return StageResult("convert", True, f"wotlkconv {r.status}: MD20 v{post.version}, {len(r.written)} file(s)")
+
     def _skins(self, m2_path: str) -> list[str]:
         out_dir = self.cfg.out_dir
         stem = os.path.splitext(os.path.basename(m2_path))[0]
@@ -407,9 +479,10 @@ class Pipeline:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "overrides.csv")
         return p if os.path.isfile(p) else None
 
-    def _fixup(self, m2_path: str) -> tuple[list[str], list[str]]:
+    def _fixup(self, m2_path: str, pre_convert: bytes = b"") -> tuple[list[str], list[str]]:
         """Run each fixup; returns (notes, rejected). An edit whose output fails
-        verification is not applied - the file stays as it was - and is reported."""
+        verification is not applied - the file stays as it was - and is reported.
+        ``pre_convert`` is the model as MultiConverter received it, for the header repair."""
         notes: list[str] = []
         rejected: list[str] = []
         skins = self._skins(m2_path)
@@ -424,6 +497,21 @@ class Pipeline:
                 pass            # not applicable to this file (wrong magic etc.)
             return None
 
+        # First, so the combiner decision below sees the repaired header.
+        if pre_convert:
+            try:
+                repaired = fixup_mod.repair_combiner_header(m2_path, pre_convert)
+            except VerifyError as exc:
+                repaired = []
+                rejected.append(f"combiner header: {exc}")
+                self._log(f"  REJECTED combiner header repair - {exc} (file left unchanged)")
+            except ValueError as exc:
+                repaired = []
+                self._log(f"  MultiConverter overwrote model data with the combiner-combos header and it "
+                          f"could not be restored: {exc}")
+            if repaired:
+                notes.append(f"restored {', '.join(repaired)} overwritten by MultiConverter's combiner header")
+
         if attempt("anim flags", lambda: fixup_mod.clear_stale_anim_flags(m2_path)):
             notes.append("cleared stale anim flags")
 
@@ -434,9 +522,13 @@ class Pipeline:
                 notes.append(f"{os.path.basename(sp)}->{new_n} submeshes")
 
         if self.cfg.fix_combiner:
+            status = attempt("combiner check", lambda: fixup_mod.combiner_status(m2_path, skins))
             r = attempt("combiner fix", lambda: fixup_mod.clear_combiner_combos(m2_path, skins))
             if r and (r[0] or r[1]):
-                notes.append(f"combiner flag cleared, {r[1]} shader(s) reset")
+                why = f" ({status})" if status else ""
+                notes.append(f"combiner flag cleared{why}, {r[1]} shader(s) reset")
+            elif status == "":
+                notes.append("combiner combos kept (valid WotLK table)")
 
         if self.cfg.expected_skins is not None:
             n = self.cfg.expected_skins

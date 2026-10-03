@@ -5,18 +5,21 @@ down to the 3.3.5a (WotLK) client.
 
 ## What this actually is
 
-**retroport is a conductor, not a converter.** It does *not* reimplement MultiConverter
-or M2Mod. It runs the novel glue that no maintained tool does — folding `.skel`/`.anim`
-into the model, fixing WotLK-specific render blockers, staging skins, and diagnosing the
-result — and it *drives the existing tools* for the heavy format work.
+**retroport is a conductor, not a converter.** The MD21 → MD20 format work is done by a
+conversion engine — by default **[wotlkconv](https://github.com/Bar3b0n3s/Converter)**
+(MIT, pure Python, used as a library), or the MultiConverter exe. retroport runs what
+neither does — WotLK render-blocker fixes, texture baking and resizing, diagnostics,
+DBC registration — and drives M2Mod + Blender for poly reduction.
 
 Division of labor:
 
 | Job | Who does it |
 |-----|-------------|
-| Fold `.skel` (bones) + `.anim` (animations) into the `.m2`, drop SKID | **retroport** (re-inline) |
-| Copy/rename `.skin` files to `<model>NN.skin` next to the `.m2` | **retroport** (stage) |
-| Clear the combiner flag + reset batch shaders (black-mesh fix) | **retroport** (fixup) |
+| **MD21 → MD20, .skel/.anim merge, TXID resolution, `.skin`/`.anim` conversion + 3.3.5 names** | **wotlkconv** (default engine) |
+| Fold `.skel` (bones) + `.anim` (animations) into the `.m2`, drop SKID | **retroport** (re-inline, MultiConverter engine) |
+| Copy/rename `.skin` files to `<model>NN.skin` next to the `.m2` | **retroport** (stage, MultiConverter engine) |
+| Restore the data MultiConverter overwrites with the combiner-combos header | **retroport** (fixup) |
+| Clear a combiner table WotLK can't use + reset batch shaders (black-mesh fix) | **retroport** (fixup) |
 | Clamp submeshes to ~59, set nViews, clear stale anim flags | **retroport** (fixup) |
 | Bake in-game paths into type-0 texture slots MultiConverter left empty | **retroport** (texbake) |
 | Diagnose triangles / submeshes / textures / bones / skins / LODs / `.anim` files | **retroport** (check) |
@@ -24,7 +27,7 @@ Division of labor:
 | Write ItemDisplayInfo rows (weapons/armor), repoint Item.dbc, item SQL + pack paths | **retroport** (register-item) |
 | Convert every 3.3.5 race/gender variant of a helm (+ `-fixhelm` for classic models) | **retroport** (helms) |
 | Resize armor textures to their body region, shrink/re-encode object textures (BLP2) | **retroport** (textures) |
-| **MD21 → MD20, version → 264, TXID/SFID texture resolution** | **MultiConverter** (external exe) |
+| **MD21 → MD20, version → 264, TXID/SFID texture resolution** (alternative engine) | **MultiConverter** (external exe) |
 | **`.m2` ↔ `.m2i` + mesh decimation** | **M2Mod** (external exe) **+ Blender** |
 
 Two things retroport does **not** do, despite common assumption: it does not *reduce*
@@ -35,8 +38,23 @@ client loads alongside the model, exactly as in modern WoW).
 ## The pipeline
 
 ```
-triage -> [poly-reduce] -> stage skins -> re-inline -> MultiConverter -> fixup -> texbake -> check
+wotlkconv engine:       triage -> [poly-reduce] -> convert (wotlkconv) -> fixup -> texbake -> check
+MultiConverter engine:  triage -> [poly-reduce] -> stage skins -> re-inline -> MultiConverter -> fixup -> texbake -> check
 ```
+
+**Engines.** `PipelineConfig.engine` / GUI Settings → *Conversion engine*:
+
+- **`wotlkconv`** (default) converts the model *and* its companions in one step: merges
+  the `.skel` (parent chains too) and its `.anim` data, flattens chunked external `.anim`
+  files, rewrites modern `.skin` headers (dropping shadow batches), drops unused LOD
+  geometry, resolves TXID textures, and writes everything under the names 3.3.5 globs
+  for. Its full listfile load costs ~19 s / 400 MB, so retroport hands it a *scoped*
+  listfile: the FileDataIDs the model and its skeleton chain reference, streamed out of
+  your listfile in one pass. Its per-file loss notes (`[lossy] m2.texture.type ...`) go
+  into the log. Unresolved textures come out as `unknown\<fdid>.blp`; texbake and check
+  treat those as unresolved, so `data/overrides.csv` can still fix them.
+- **`multiconverter`** — the exe route below (stage + re-inline + MultiConverter). Still
+  needed for one thing: MultiConverter's `-fixhelm` refit of helms for *classic* models.
 
 1. **triage** — classify the model (M2 vs M3, version, uses `.skel`).
 2. **poly-reduce** *(optional; needs M2Mod + Blender)* — M2Mod exports `.m2`->`.m2i`,
@@ -44,12 +62,27 @@ triage -> [poly-reduce] -> stage skins -> re-inline -> MultiConverter -> fixup -
    route (Blender writes `.m2i`, not a WotLK `.m2` binary, so M2Mod does the compile).
    Runs *before* conversion, on the modern model. M2Mod rejects a reduction that's still
    over the WotLK vertex/index caps, so it fails loudly rather than shipping a broken model.
-3. **stage** — copy the model's `.skin` files into the output folder as `<model>NN.skin`.
-4. **re-inline** — fold `.skel` + `.anim` into a self-contained `.m2`, drop SKID
-   (skipped automatically for models with no `.skel`).
-5. **MultiConverter** — the MD21->MD20 conversion. retroport verifies the result really
-   became MD20 (`post-convert: chunked=False version=264`).
-6. **fixup** — combiner-flag/shader fix, submesh clamp, nViews, stale-flag cleanup.
+3. **stage** *(MultiConverter engine)* — copy the model's `.skin` files into the output
+   folder as `<model>NN.skin`.
+4. **re-inline** *(MultiConverter engine)* — fold `.skel` + `.anim` into a self-contained
+   `.m2`, drop SKID (skipped automatically for models with no `.skel`).
+5. **convert** — wotlkconv, or MultiConverter. Either way retroport verifies the result
+   really became MD20 (`post-convert: chunked=False version=264`).
+6. **fixup** — combiner header repair, combiner-flag/shader fix, submesh clamp, nViews,
+   stale-flag cleanup.
+   - *Combiner header repair:* when MultiConverter adds texture-combiner combos to a model
+     that had none, it sets global flag 0x08 and writes the combos field at 0x130 without
+     moving the data already there — the first array after the header: on a real 2H axe and
+     on hozumonkey the global-loop timestamps, and on a model without global loops the
+     sequence table, so the first animation (Stand) loses its id and duration. Verified by
+     running MultiConverter on both: flag 0x08 newly set, combos `[1, 4, 1, 1]` / `[1, 4]`
+     written over the loops, and the repair restores them byte for byte. retroport keeps the model as MultiConverter received
+     it and restores that data from it. `retroport repair` does the same for models converted
+     before this fix.
+   - *Combiner flag:* a valid table is kept (Blizzard's own 3.3.5 models use one in about one
+     model in eight, most often `[1, 4]`: a texture plus an env-mapped reflection). Only a
+     table WotLK can't use — empty, out of bounds, values above 7, or batch shaders indexing
+     past it — is cleared, with batch shaders reset to 0.
 7. **texbake** — the modern model names textures by FileDataID (TXID chunk); MultiConverter
    resolves the ones its listfile knows. For any type-0 slot still empty, retroport reads
    the TXID captured *before* conversion, looks the id up in your listfile (+
@@ -83,7 +116,8 @@ triage -> [poly-reduce] -> stage skins -> re-inline -> MultiConverter -> fixup -
 ## Install & run
 
 ```bash
-pip install -e .            # library + `retroport` CLI (pydantic, typer, rich)
+pip install -e .            # library + `retroport` CLI (pydantic, typer, rich, Pillow)
+pip install -e "I:\WoW Modding\Converter"   # the wotlkconv engine (or: pip install -e ".[engine]")
 pip install -e ".[gui]"     # + PyQt6 desktop app
 pip install -e ".[dev]"     # + pytest
 
@@ -100,6 +134,7 @@ retroport reinline  ...\foo.m2 --out I:\conv --json
 retroport check  I:\conv\foo.m2               # WotLK render-blocker diagnostics on a converted model
 retroport bake  I:\conv\foo.m2 --slot 0=Creature\Foo\foo_skin.blp       # manual texture paths
 retroport bake  I:\conv\foo.m2 --source-m2 I:\extract\foo.m2 --listfile listfile.csv   # auto from TXID
+retroport repair  I:\conv\foo.m2 --source-m2 I:\extract\foo.m2   # restore data MultiConverter overwrote at 0x130
 retroport register --dbc-dir I:\dbc --out I:\patch\DBFilesClient --path Creature\Foo\foo.m2 --m2 I:\conv\foo.m2 --entries 1234
 retroport helms I:\extract\item\objectcomponents\head\helm_foo_hum.m2 --out I:\conv\helms --client classic --multiconverter I:\tools\MultiConverter_Console.exe
 retroport textures I:\extract\item\texturecomponents --out I:\patch --target classic --max-object 512
@@ -160,8 +195,8 @@ submesh clamp, staging, check.
 is a client-side crash):
 - whether MultiConverter's flag-stripping is sufficient for a clean load (test a plain
   converted model first);
-- whether the staged/clamped modern `.skin` files are WotLK-compatible as-is or need an
-  explicit conversion step;
+- with the MultiConverter engine, whether the staged/clamped modern `.skin` files are
+  WotLK-compatible as-is (the wotlkconv engine rewrites them to the 48-byte 3.3.5 header);
 - the Blender decimation round-trip (the write-side of Blender is the known weak link;
   M2Mod's cap check is the safety net).
 
@@ -173,12 +208,19 @@ that MultiConverter leaves external `.anim` files in Legion's chunked AFM2 forma
 when the M2 carries more than 1.5x the vertices skin00 uses. Models that ship a separate
 `_lod` skin trip it; whether that actually breaks a 3.3.5 client is untested.
 
-**Gaps:** MPQ packaging; converting / inlining the external `.anim` files of non-skel
-models; WMOs and doodads; bone pruning over the ~256 ceiling. Helms and resized armor
+**wotlkconv engine on real models:** a 2H axe (clean check), hozumonkey (its 18 external
+`.anim` files now come out flat, no AFM2 warning), and the `.skel`-based Kul Tiran male
+(skeleton merged; 276 inline + 57 external animations) all convert to MD20 v264; the
+remaining blocker on the last two is the triangle ceiling (poly-reduce).
+
+**Gaps:** MPQ packaging; WMOs and doodads (wotlkconv converts both - not wired into the
+pipeline yet); character models (eyes use texture type 19, which wotlkconv empties, and
+modern face UVs don't match the 3.3.5 skin layout); bone pruning over the ~256 ceiling. Helms and resized armor
 textures still need an in-client check (helm fit with/without `-fixhelm`, texture layout).
 
 **Tool quirk:** MultiConverter reports "No files to convert" when the model path is over
-260 characters (Windows MAX_PATH) - keep output folders short.
+260 characters (Windows MAX_PATH) - keep output folders short. (The wotlkconv engine
+doesn't have this limit.)
 
 ## Layout
 
@@ -198,11 +240,12 @@ retroport/
                        skel, anim, verify (structural problem detectors), blp (BLP2 codec)
   convert/
     skel_reinliner.py  the .skel re-inliner  <- the novel native work
+    engine.py          wotlkconv engine: scoped listfile, conversion, verified writes
     multiconverter.py  MultiConverter wrapper (console build, output verification)
     m2mod.py           M2Mod wrappers (m2<->m2i, txid-remove) + reduce_model chain
     blender.py         Blender decimate wrapper
     blender_decimate.py  headless Blender script (WoWTools .m2i / WBS .m2 / obj)
-    fixup.py           combiner fix, submesh clamp, nViews, stale-flag cleanup
+    fixup.py           combiner header repair, combiner fix, submesh clamp, nViews, stale-flag cleanup
     texbake.py         TXID + listfile -> baked texture paths
     loaders.py         FileDataID loaders over a wow.export extraction
 gui/                   PyQt6 shell over pipeline.py

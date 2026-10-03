@@ -7,11 +7,15 @@ dependencies = [
     "pydantic>=2.0",
     "typer>=0.12",
     "rich>=13.0",
+    "Pillow>=10.0",          # BLP decode/encode (formats/blp.py, textures.py)
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 gui = ["PyQt6>=6.5"]
+# The default conversion engine. For a local checkout instead:
+#   pip install -e "I:\WoW Modding\Converter"
+engine = ["wotlkconv @ git+https://github.com/Bar3b0n3s/Converter"]
 
 [project.scripts]
 retroport = "retroport.cli:main"

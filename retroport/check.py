@@ -7,8 +7,9 @@ the modern source.
 
 What it surfaces:
   * nViews (how many .skin files the client will load) vs. which are present,
-  * the texture-combiner-combos flag (0x08) - the usual cause of all-black
-    meshes, since the client then reads M2Batch.shader as a combo-table index,
+  * the texture-combiner-combos flag (0x08) - the client then reads M2Batch.shader
+    as a combo-table index, so a table that doesn't fit renders all-black meshes;
+    and data MultiConverter overwrote with that table's header field,
   * bone count vs. WotLK's practical ceiling,
   * texture list with type (type != 0 = filled at runtime, normal for character
     skin/hair; type 0 with an empty path = a real problem),
@@ -31,7 +32,7 @@ from dataclasses import dataclass, field
 from .models import Finding, Severity, ValidationReport
 from .formats import structs as S
 from .formats.md20 import read_sequences, read_texture_slots
-from .formats.verify import m2_data_block
+from .formats.verify import combiner_combos_problem, combiner_header_overlaps, m2_data_block
 
 # character geoset groups (skinSectionId // 100); a guide, not exhaustive
 _GEOSET_GROUPS = {
@@ -133,10 +134,13 @@ def analyze_m2(path: str) -> CheckResult:
     elif res.version not in (256, 257, 260, 261, 262, 263, 264):
         res.findings.append(Finding(check="version", severity=Severity.WARN,
                                     detail=f"version {res.version} is not a WotLK-era value (expected 264); did MultiConverter run?"))
-    if res.combiner_combos:
-        res.findings.append(Finding(check="combiner_combos", severity=Severity.WARN,
-            detail=f"global flag 0x08 set: M2Batch.shader is read as a combiner-combo index ({res.combiner_combo_count} combos). "
-                   "If these are wrong/empty, meshes render black. Clearing 0x08 and resetting batch shaders to 0 is the usual fix."))
+    overlaps = combiner_header_overlaps(block)
+    if overlaps:
+        res.findings.append(Finding(check="combiner_header", severity=Severity.FAIL,
+            detail=f"{', '.join(overlaps)} data starts inside the combiner-combos header field (0x130-0x137), so its "
+                   "first 8 bytes are lost (global-loop timestamps, or for the sequence table the Stand animation). "
+                   "MultiConverter does this "
+                   "when it adds combos; re-run the pipeline, or `retroport repair <m2> --source-m2 <original>`."))
     if res.bones > _WOTLK_BONE_CEILING:
         res.findings.append(Finding(check="bone_count", severity=Severity.WARN,
             detail=f"{res.bones} bones exceeds WotLK's ~{_WOTLK_BONE_CEILING} palette ceiling; may need bone reduction in Blender."))
@@ -144,6 +148,12 @@ def analyze_m2(path: str) -> CheckResult:
     if bad_tex:
         res.findings.append(Finding(check="texture_path", severity=Severity.WARN,
             detail=f"{len(bad_tex)} hardcoded (type 0) texture(s) have no path; texture references unresolved."))
+    placeholders = [p for t, p in res.textures if t == 0 and p.lower().startswith(("unknown\\", "unknown/"))]
+    if placeholders:
+        res.findings.append(Finding(check="texture_placeholder", severity=Severity.WARN,
+            detail=f"{len(placeholders)} texture(s) point at a stand-in path for an unresolved FileDataID "
+                   f"({', '.join(placeholders[:3])}): add the id to data/overrides.csv or a newer listfile "
+                   "and re-run, or pack a .blp at that path."))
     return res
 
 
@@ -201,6 +211,24 @@ def check_model(m2_path: str, skin_dir: str | None = None) -> CheckResult:
         res.findings.append(Finding(check="skin_format", severity=Severity.FAIL,
             detail=f"{len(bad_magic)} .skin file(s) lack the SKIN magic; not WotLK format (convert them)."))
 
+    if res.combiner_combos:
+        with open(m2_path, "rb") as fh:
+            raw = fh.read()
+        skins = []
+        for s in res.skins:
+            if s.present and s.magic_ok:
+                with open(s.path, "rb") as fh:
+                    skins.append(fh.read())
+        problem = combiner_combos_problem(raw, skins)
+        if problem:
+            res.findings.append(Finding(check="combiner_combos", severity=Severity.WARN,
+                detail=f"global flag 0x08 set, but its combiner-combos table can't work on WotLK: {problem}. "
+                       "Batches that use it render black; fixup clears the flag and resets batch shaders to 0."))
+        else:
+            res.findings.append(Finding(check="combiner_combos", severity=Severity.PASS,
+                detail=f"global flag 0x08 with a valid {res.combiner_combo_count}-entry combiner-combos table: "
+                       "blends textures (e.g. env-mapped reflections) the way Blizzard's own 3.3.5 models do."))
+
     primary = res.skins[0] if res.skins else None
     if primary and primary.present and primary.magic_ok:
         groups = sorted({g // 100 for g in primary.geosets})
@@ -229,12 +257,6 @@ def check_model(m2_path: str, skin_dir: str | None = None) -> CheckResult:
                 res.findings.append(Finding(check="shaders", severity=Severity.WARN,
                     detail=f"batch shader values {odd} look non-WotLK (expected 0 or small on disk); "
                            "those batches may render black until reset to 0."))
-        else:
-            runtime_shaders = [s for s in primary.shaders if not (s & 0x8000)]
-            if runtime_shaders:
-                res.findings.append(Finding(check="shaders", severity=Severity.WARN,
-                    detail=f"batch shader values {sorted(set(primary.shaders))} are combiner-combo indices (flag 0x08); "
-                           "verify they're in range or the batches go black."))
 
         if not res.chunked and primary.vertex_span and res.vertices > primary.vertex_span:
             _check_lod_vertices(res, primary, folder, stem)

@@ -6,6 +6,7 @@
     retroport reinline <m2> --out <dir> [--json]     re-inline a .skel model (Milestones A+B)
     retroport check <md20> [--json]                  WotLK render-blocker diagnostics on converted output
     retroport bake <md20> --slot N=path [--json]     bake in-game texture paths into type-0 slots
+    retroport repair <md20> --source-m2 <m2>         restore data MultiConverter overwrote at 0x130
     retroport register --dbc-dir --out --path        add CreatureModelData/DisplayInfo rows + SQL
     retroport register-item --dbc-dir --out ...      add an ItemDisplayInfo row (+ Item.dbc repoint) + SQL
     retroport textures <blp|dir>... --out --target   resize armor/object textures for 3.3.5
@@ -450,6 +451,72 @@ def bake(
 
 
 @app.command()
+def repair(
+    model: str = typer.Argument(..., help="A converted (MD20) .m2."),
+    source_m2: str = typer.Option(..., "--source-m2", help="The .m2 MultiConverter was given (for a model without "
+                                  ".skel, the extracted original)."),
+    out: str = typer.Option("", "--out", help="Output folder (default: <model folder>/repaired). Never the model's own folder."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the JSON result envelope to stdout."),
+) -> None:
+    """Restore data MultiConverter overwrote with the combiner-combos header (global loops or the Stand animation)."""
+    from .convert import fixup
+    from .formats.verify import VerifyError, m2_problems, no_new_problems
+    from .models import ConversionResult, Finding, ValidationReport
+    from .safeio import same_dir, write_verified
+
+    def fail(msg: str, code: int = 2):
+        if json_out:
+            _emit_json("repair", False, None, msg)
+        else:
+            console.print(f"[red]{msg}[/]")
+        raise typer.Exit(code=code)
+
+    for path in (model, source_m2):
+        if not os.path.isfile(path):
+            fail(f"not found: {path}")
+    out_dir = out or os.path.join(os.path.dirname(os.path.abspath(model)), "repaired")
+    if os.path.isdir(out_dir) and same_dir(out_dir, os.path.dirname(os.path.abspath(model))):
+        fail("--out is the model's own folder; pick another so the input is never overwritten")
+    with open(model, "rb") as fh:
+        data = fh.read()
+    if data[:4] != b"MD20":
+        fail("repair needs an MD20 (converted) model")
+    with open(source_m2, "rb") as fh:
+        original = fh.read()
+
+    out_path = os.path.join(out_dir, os.path.basename(model))
+    created_dir = not os.path.isdir(out_dir)
+
+    def discard():
+        os.remove(out_path)
+        if created_dir:
+            os.rmdir(out_dir)
+
+    write_verified(out_path, data, no_new_problems(data, m2_problems))
+    try:
+        repaired = fixup.repair_combiner_header(out_path, original)
+    except (ValueError, VerifyError) as exc:
+        discard()
+        fail(str(exc), code=1)
+    if not repaired:
+        discard()
+        if json_out:
+            _emit_json("repair", True, None)
+        else:
+            console.print("[green]Nothing to repair[/]: no model data starts inside the combiner-combos header field.")
+        raise typer.Exit(code=0)
+
+    findings = [Finding(check="repaired", severity=Severity.PASS,
+                        detail=f"restored {name} from {os.path.basename(source_m2)}") for name in repaired]
+    cr = ConversionResult(source=model, output=out_path, stage="repair", success=True,
+                          report=ValidationReport(asset=out_path, findings=findings))
+    if json_out:
+        _emit_json("repair", True, cr)
+        raise typer.Exit(code=0)
+    console.print(f"[green]Repaired[/] {', '.join(repaired)} -> {out_path}")
+
+
+@app.command()
 def register(
     dbc_dir: str = typer.Option(..., "--dbc-dir", help="Folder with the extracted 3.3.5a CreatureModelData/DisplayInfo.dbc."),
     out: str = typer.Option(..., "--out", help="Folder for the patched DBCs (must differ from --dbc-dir)."),
@@ -603,15 +670,19 @@ def helms(
     model: str = typer.Argument(..., help="Any one race/gender variant of the helm (e.g. helm_foo_hum.m2)."),
     out: str = typer.Option(..., "--out", help="Output folder for all converted variants."),
     client: str = typer.Option("classic", "--client", help="classic (adds MultiConverter -fixhelm) or hd character models."),
-    multiconverter: str = typer.Option(..., "--multiconverter", help="MultiConverter_Console.exe"),
+    engine: str = typer.Option("wotlkconv", "--engine", help="wotlkconv (built-in) or multiconverter."),
+    multiconverter: str = typer.Option("", "--multiconverter", help="MultiConverter_Console.exe (multiconverter engine)."),
     listfile: str = typer.Option("", "--listfile", help="Community listfile.csv (texture baking)."),
     no_goblin: bool = typer.Option(False, "--no-goblin", help="Skip the NPC-only goblin variants."),
 ) -> None:
     """Convert every 3.3.5 race/gender variant of a helm (one model per race/gender)."""
     from .helms import convert_helm_set
 
+    if engine == "multiconverter" and not multiconverter:
+        console.print("[red]--engine multiconverter needs --multiconverter <path to MultiConverter_Console.exe>[/]")
+        raise typer.Exit(code=2)
     try:
-        hs, results = convert_helm_set(model, out, client_models=client,
+        hs, results = convert_helm_set(model, out, client_models=client, engine=engine,
                                        tools={"multiconverter": multiconverter, "listfile": listfile},
                                        include_npc_races=not no_goblin,
                                        on_log=lambda m: console.print(m, markup=False, highlight=False))

@@ -91,7 +91,8 @@ class RetroportGUI(QWidget):
         self.cb_reinline = QCheckBox("Re-inline .skel"); self.cb_reinline.setChecked(True)
         self.cb_polyreduce = QCheckBox("Poly-reduce (M2i, Blender 3.4)"); self.cb_polyreduce.setChecked(False)
         self.cb_txid = QCheckBox("TXID textures (M2Mod)"); self.cb_txid.setChecked(False)
-        self.cb_convert = QCheckBox("MultiConverter"); self.cb_convert.setChecked(True)
+        self.cb_convert = QCheckBox("Convert (MD21->MD20)"); self.cb_convert.setChecked(True)
+        self.cb_convert.setToolTip("Runs the conversion engine chosen in Settings (wotlkconv or MultiConverter)")
         self.cb_fixup = QCheckBox("Fixup"); self.cb_fixup.setChecked(True)
         self.cb_combiner = QCheckBox("Fix combiner flag"); self.cb_combiner.setChecked(True)
         self.cb_texbake = QCheckBox("Bake textures"); self.cb_texbake.setChecked(True)
@@ -349,6 +350,15 @@ class RetroportGUI(QWidget):
             le = QLineEdit(self.settings.value(f"tool_{key}", ""))
             self.tool_inputs[key] = le
             form.addRow(label + ":", _row(le, lambda _=False, k=key: self._browse_tool(k)))
+        from retroport.convert import engine as _engine
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItem("wotlkconv (built-in Python converter)"
+                                  + ("" if _engine.available() else "  - NOT INSTALLED"), "wotlkconv")
+        self.engine_combo.addItem("MultiConverter (external exe above)", "multiconverter")
+        self.engine_combo.setCurrentIndex(max(0, self.engine_combo.findData(self.settings.value("engine", "wotlkconv"))))
+        self.engine_combo.setToolTip("wotlkconv also merges .skel skeletons and converts skins/.anim files itself; "
+                                     "MultiConverter is needed only for classic-model helms (-fixhelm)")
+        form.addRow("Conversion engine:", self.engine_combo)
         self.client_models = QComboBox()
         self.client_models.addItem("Classic 3.3.5 character models (256 skin)", "classic")
         self.client_models.addItem("HD character models, e.g. 3.3.5 HD patch (512 skin)", "hd")
@@ -467,6 +477,7 @@ class RetroportGUI(QWidget):
             self.settings.setValue(f"tool_{key}", le.text().strip())
         self.settings.setValue("multiconverter_args", self.mc_args_input.text().strip())
         self.settings.setValue("client_models", self.client_models.currentData())
+        self.settings.setValue("engine", self.engine_combo.currentData())
         self.tex_target.setCurrentIndex(self.tex_target.findData(self.client_models.currentData()))
         QMessageBox.information(self, "Saved", "Settings saved.")
 
@@ -500,6 +511,7 @@ class RetroportGUI(QWidget):
             expected_skins=self.nviews_spin.value() or None,
             multiconverter_args=shlex.split(self.settings.value("multiconverter_args", "") or ""),
             fix_combiner=self.cb_combiner.isChecked(),
+            engine=self.settings.value("engine", "wotlkconv") or "wotlkconv",
             do_texbake=self.cb_texbake.isChecked(),
         )
         self.run_btn.setEnabled(False)

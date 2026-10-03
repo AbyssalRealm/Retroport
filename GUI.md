@@ -25,8 +25,8 @@ The stages, in order:
 | Stage        | What it does                                             | Needs |
 |--------------|----------------------------------------------------------|-------|
 | Triage       | classify the model (M2 vs M3, version, uses `.skel`)     | built |
-| Re-inline    | fold `.skel` + `.anim` into a self-contained M2          | built |
-| MultiConverter | MD21 → MD20, version 264, resolve TXID/SFID            | exe   |
+| Re-inline    | fold `.skel` + `.anim` into a self-contained M2 (MultiConverter engine only) | built |
+| Convert      | MD21 → MD20 with the Settings engine: wotlkconv (also merges `.skel`, converts skins/anims) or MultiConverter | wotlkconv installed / exe |
 | Fixup        | clear stale anim flags, clamp submeshes, set nViews      | built |
 | Bake textures | fill empty type-0 texture slots from TXID + listfile    | listfile (Settings) |
 | Check        | WotLK render-blocker diagnostics (+ LOD gate, .anim files) | built |
@@ -34,9 +34,10 @@ The stages, in order:
 The output folder must not be the model's own folder (the run refuses it), and the
 converted model + skins are copied to `<out>/_backup/` before fixup/bake edit them.
 
-Re-inline auto-skips a model with no `.skel` (it passes straight through).
-MultiConverter is attempted via CLI argument; if a build ignores it, the log says
-so and you run that one step by hand.
+Re-inline auto-skips a model with no `.skel` (it passes straight through), and is skipped
+with the wotlkconv engine, which merges the skeleton itself; so is staging. wotlkconv's
+loss notes (`[lossy] ...`) appear in the log. With the MultiConverter engine, the exe is
+run via CLI argument; if a build ignores it, the log says so and you run that one step by hand.
 
 **Register** - make a converted model usable in-game. Point it at an extracted DBC
 folder + the in-game model path; it appends `CreatureModelData` +
@@ -57,7 +58,8 @@ The output lists the new displayId, the paths to pack, and the SQL. See the READ
 
 **Convert > Helm set** - ticked automatically when you pick a `helm_..._hum.m2`-style
 model: runs every 3.3.5 race/gender variant beside it into the output folder, with
-MultiConverter `-fixhelm` when Settings says the client uses classic character models.
+MultiConverter `-fixhelm` when Settings says the client uses classic character models
+(that refit needs the MultiConverter engine; wotlkconv has none, which suits HD models).
 
 **Textures** - add .blp files/folders, pick an output folder and the target (defaults to
 the Settings choice). Armor component textures are resized to their body region and
@@ -65,9 +67,10 @@ written into `Item\TextureComponents\<Section>Texture\` (palettized, like Blizza
 weapon/helm textures are copied, or shrunk above the size you set.
 
 **Settings** - the external tool exes, saved with QSettings: MultiConverter, M2Mod,
-BLPConverter, MPQ Editor, Blender, and the listfile - plus **Client character models**
-(classic 256 skin / HD 512 skin), which drives helm `-fixhelm` and the texture target. These flow into the pipeline
-as `PipelineConfig.tools`.
+BLPConverter, MPQ Editor, Blender, and the listfile - plus **Conversion engine**
+(wotlkconv, the default, or MultiConverter) and **Client character models** (classic 256
+skin / HD 512 skin), which drives helm `-fixhelm` and the texture target. These flow into
+the pipeline as `PipelineConfig.engine` and `PipelineConfig.tools`.
 
 ## Using the pipeline without the GUI
 
@@ -77,7 +80,7 @@ from retroport import Pipeline, PipelineConfig
 cfg = PipelineConfig(
     model=r"I:/extract/creature/foo/foo.m2",
     out_dir=r"I:/converted/foo",
-    tools={"multiconverter": r"I:/tools/MultiConverter.exe"},
+    tools={"listfile": r"I:/tools/listfile.csv"},   # engine="wotlkconv" is the default
     clamp_submeshes_to=59,
 )
 result = Pipeline(cfg, on_log=print).run()
