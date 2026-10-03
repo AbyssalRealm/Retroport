@@ -71,6 +71,9 @@ def test_install_replaces_only_what_it_was_built_on(tmp_path, monkeypatch):
 
     receipt = install.apply_install(plan, clean=True)
     assert (root / "DBFilesClient" / "CreatureDisplayInfo.dbc").read_bytes() == b"new cdi"
+    _FakeClient.files = {"DBFilesClient\\CreatureDisplayInfo.dbc": b"new cdi", "DBFilesClient\\ChrRaces.dbc": b"new chr"}
+    again = install.plan_install(str(pkg), str(wow), server_dbc_dir=str(server))
+    assert {a.kind for a in again.actions} == {"same"}                 # installed: nothing to do, nothing stale
     assert (server / "ChrRaces.dbc").read_bytes() == b"new server chr"
     assert not (root / "Character" / "KulTiran" / "Hair00_00.blp").exists()
     r = json.loads(open(receipt).read())

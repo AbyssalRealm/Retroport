@@ -82,6 +82,9 @@ def plan_install(package: str, client_dir: str | None, patch: str = "patch-H.MPQ
                 key = "client/" + rel.replace("\\", "/")
                 target = os.path.join(root, rel)
                 new, cur = _read(src), _read(target)
+                if cur is not None and cur == new:
+                    plan.actions.append(Action(kind="same", rel=key, target=target))
+                    continue
                 if key in bases:
                     hit = client.find(rel)
                     now = sha256(hit[1]) if hit else None
@@ -117,7 +120,9 @@ def plan_install(package: str, client_dir: str | None, patch: str = "patch-H.MPQ
             key, target = f"server/dbc/{f}", os.path.join(server_dbc_dir, f)
             new, cur = _read(os.path.join(pkg_server, f)), _read(target)
             base = bases.get(key)
-            if base and (cur is None or sha256(cur) != base["sha256"]):
+            if cur is not None and cur == new:
+                plan.actions.append(Action(kind="same", rel=key, target=target))
+            elif base and (cur is None or sha256(cur) != base["sha256"]):
                 plan.actions.append(Action(kind="stale", rel=key, target=target,
                                            detail="the server's copy changed since the build - rebuild the package"))
             elif cur is None:
