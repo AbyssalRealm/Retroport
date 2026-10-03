@@ -12,6 +12,7 @@
     retroport textures <blp|dir>... --out --target   resize armor/object textures for 3.3.5
     retroport helms <helm_x_hum.m2> --out ...        convert every 3.3.5 race/gender variant of a helm
     retroport character --bfa ... --race --sex       port a BfA playable race (model, textures, DBC rows)
+    retroport race <Race> --bfa --client --out       make it playable: DBCs, create screen, server DBCs + SQL
 
 Designed to run today against any folder. Point it at a wow.export extraction
 to get a real asset inventory and a list of what still needs conversion.
@@ -735,6 +736,53 @@ def character(
         console.print(f"  [yellow]warn[/] {w}", highlight=False)
     for c in r.check:
         console.print(f"  [red]{c}[/]" if c.startswith("fail") else f"  {c}", highlight=False)
+
+
+@app.command(name="race")
+def race_cmd(
+    race: str = typer.Argument(..., help="BfA race by ClientFileString or name, e.g. KulTiran."),
+    bfa: str = typer.Option(..., "--bfa", help="A local BfA (8.x) install."),
+    client: str = typer.Option(..., "--client", help="Your 3.3.5a client folder (read only; its DBCs and UI are the base)."),
+    out: str = typer.Option(..., "--out", help="Output folder (client\\, server\\, INSTALL.txt)."),
+    listfile: str = typer.Option(..., "--listfile", help="Community listfile.csv."),
+    dbd: str = typer.Option(..., "--dbd", help="WoWDBDefs 'definitions' folder."),
+    server_dbc: str = typer.Option("", "--server-dbc", help="The server's DBC folder (read only), e.g. D:\\AC\\Build\\Data\\dbc."),
+    name: str = typer.Option("", "--name", help="Display name (default: the BfA ClientFileString), e.g. \"Kul Tiran\"."),
+    alliance_id: int = typer.Option(22, "--alliance-id", help="Race id of the Alliance version (0: none). 1-32."),
+    horde_id: int = typer.Option(23, "--horde-id", help="Race id of the Horde version (0: none). 1-32."),
+    alliance_template: int = typer.Option(1, "--alliance-template", help="Race the Alliance version copies (start, racials, gear)."),
+    horde_template: int = typer.Option(2, "--horde-template", help="Race the Horde version copies."),
+    look_template: int = typer.Option(1, "--look-template", help="Race whose voices, names, helmets and scene are borrowed."),
+    target: str = typer.Option("hd", "--target", help="hd (512 body texture) or classic (256)."),
+    reuse: bool = typer.Option(False, "--reuse", help="Reuse the character conversion already in --out."),
+    replace: bool = typer.Option(False, "--replace", help="Remove a previous build of these race ids first (rebuilds)."),
+    json_out: bool = typer.Option(False, "--json", help="Emit the JSON result envelope to stdout."),
+) -> None:
+    """Make a BfA race playable on 3.3.5a: character, DBCs, create-screen UI, server DBCs and SQL."""
+    from .race.build import build_race
+
+    try:
+        r = build_race(install_dir=bfa, client_dir=client, out_dir=out, listfile=listfile, dbd_dir=dbd, race=race,
+                       name=name or None, alliance_id=alliance_id, horde_id=horde_id,
+                       alliance_template=alliance_template, horde_template=horde_template,
+                       look_template=look_template, server_dbc_dir=server_dbc or None, target=target,
+                       reuse=reuse, replace=replace,
+                       on_log=None if json_out else (lambda m: console.print(m, markup=False, highlight=False)))
+    except (OSError, ValueError) as exc:
+        if json_out:
+            _emit_json("race", False, None, str(exc))
+        else:
+            console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    if json_out:
+        _emit_json("race", True, r)
+        raise typer.Exit(code=0)
+    console.print(f"\n[green]{r.name}[/]: " + ", ".join(f"race {s['race_id']} ({s['faction']})" for s in r.races))
+    for side, rows in r.rows.items():
+        console.print(f"  {side} rows: {rows}", highlight=False)
+    for w in r.warnings:
+        console.print(f"  [yellow]warn[/] {w}", highlight=False)
+    console.print(f"  install steps: {os.path.join(out, 'INSTALL.txt')}")
 
 
 def main() -> None:

@@ -158,6 +158,65 @@ def verify_dbc(path: str) -> None:
     DBCFile.from_bytes(data, path)
 
 
+class RawDBC:
+    """A WDBC whose records aren't all uint32s (CharBaseInfo: 2 bytes; CharStartOutfit:
+    uint32 + 4 bytes + 72 uint32s). Records stay raw ``bytes``; callers pack/unpack them.
+    The header's field_count is kept as found."""
+
+    def __init__(self, field_count: int, record_size: int):
+        self.field_count = field_count
+        self.record_size = record_size
+        self.records: list[bytes] = []
+        self.string_block = bytearray(b"\x00")
+
+    @classmethod
+    def from_bytes(cls, data: bytes, path: str = "<memory>") -> "RawDBC":
+        if len(data) < HEADER_SIZE or data[:4] != MAGIC:
+            raise DBCError(f"{path}: not a WDBC file")
+        _m, n_rec, n_fields, rec_size, str_size = struct.unpack_from(HEADER_FORMAT, data, 0)
+        if HEADER_SIZE + n_rec * rec_size + str_size > len(data):
+            raise DBCError(f"{path}: truncated")
+        obj = cls(n_fields, rec_size)
+        pos = HEADER_SIZE
+        for _ in range(n_rec):
+            obj.records.append(bytes(data[pos:pos + rec_size]))
+            pos += rec_size
+        obj.string_block = bytearray(data[pos:pos + str_size]) or bytearray(b"\x00")
+        return obj
+
+    @classmethod
+    def load(cls, path: str) -> "RawDBC":
+        with open(path, "rb") as fh:
+            return cls.from_bytes(fh.read(), path)
+
+    def add_record(self, record: bytes) -> None:
+        if len(record) != self.record_size:
+            raise DBCError(f"record is {len(record)} bytes, expected {self.record_size}")
+        self.records.append(bytes(record))
+
+    def to_bytes(self) -> bytes:
+        return (struct.pack(HEADER_FORMAT, MAGIC, len(self.records), self.field_count, self.record_size,
+                            len(self.string_block)) + b"".join(self.records) + bytes(self.string_block))
+
+    def save(self, path: str) -> str:
+        expected = self.to_bytes()
+
+        def verify(p: str) -> None:
+            with open(p, "rb") as fh:
+                if fh.read() != expected:
+                    raise DBCError(f"{p}: written file differs from what was meant to be written")
+            RawDBC.load(p)
+        return write_verified(path, expected, verify)
+
+
+def load_dbc(data: bytes, name: str, field_count: int) -> DBCFile:
+    """Parse a uint32 DBC and check it has the 3.3.5a field count for ``name``."""
+    dbc = DBCFile.from_bytes(data, name)
+    if dbc.field_count != field_count:
+        raise DBCError(f"{name}: expected {field_count} fields (3.3.5a), found {dbc.field_count}")
+    return dbc
+
+
 def _load_expecting(path: str, field_count: int, name: str) -> DBCFile:
     if not os.path.isfile(path):
         raise DBCError(f"{name} not found: {path}")

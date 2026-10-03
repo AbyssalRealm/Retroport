@@ -219,15 +219,57 @@ CASC reader).
    `--race-id`, appended to your client's DBCs (refused if that race/sex already has rows).
    Pass one run's `DBFilesClient` as the next run's `--dbc-dir` to collect both sexes.
 
-`--target classic` writes the 256x256 layout instead of the HD 512x512 one. Adding the race
-itself (ChrRaces, the model path `Character\<Race>\<Sex>\...`, the server side) is up to your
-client/server mod or WarcraftXL.
+`--target classic` writes the 256x256 layout instead of the HD 512x512 one. To make the
+race playable, use `race` (below), which runs this for both sexes.
 
 Verified on BfA Kul Tiran male and female: the head now samples 3.3.5's face region, a
 client-style composite (skin + FaceLower + FaceUpper) with the model's UV wireframe on top
 lines eyes, mouth and ears up exactly, 0 skin vertices shared or outside, 0 straddling
 triangles. Still needed: poly reduction (25,226 / 33,741 triangles vs the 21,845 ceiling)
 and an in-client test.
+
+### Making it playable (`race`)
+
+```bash
+retroport race KulTiran --name "Kul Tiran" --bfa "I:\WoW Modding\Clients\WorldofWarcraft BFA" \
+    --client "F:\Wrath of the Lich King 3.3.5a (wod models)" --server-dbc D:\AC\Build\Data\dbc \
+    --out I:\port\KulTiranRace --listfile listfile.csv --dbd I:\WoW Modding\WoWDBDefs\definitions
+```
+
+Converts both sexes (as `character`) and adds everything a selectable race needs, as an
+Alliance race (`--alliance-id`, default 22) and a Horde twin (`--horde-id`, default 23; `0`
+leaves a side out) that share the models and textures - 3.3.5 fixes a race's faction in
+ChrRaces, so "either faction" means two race ids. Race ids must be 1-32: client and
+AzerothCore race masks are 32-bit (a race 53 would silently share race 21's bit).
+
+The client is only read. Every DBC is built on the copy the client actually loads, found
+in the archive order WarcraftXL mounts (`patch*.MPQ` folders first, then lettered/numbered
+patches, locale first on a tie, then the stock chain); `INSTALL.txt` lists each source.
+
+- **ChrRaces** - copies the faction template (`--alliance-template 1` Human,
+  `--horde-template 2` Orc: faction, language, intro); name, `ClientFileString` = the BfA
+  folder name; helmets (`ClientPrefix`) and customization labels from `--look-template`.
+- **CreatureDisplayInfo / CreatureModelData** - base displays cloned from the look
+  template's (sound, collision), pointing at the new models.
+- **CharBaseInfo** - every class any race has (all ten with ARAC); **CharStartOutfit** -
+  the template's outfits.
+- **SkillRaceClassInfo, SkillLineAbility, Faction** - wherever a race mask includes the
+  template, the new race is added (languages, racials, weapon skills, reputations).
+- **EmotesTextSound, VocalUISounds, NameGen** - voices and random names from the look template.
+- **CharSections, CharHairGeosets, CharacterFacialHairStyles** - the converted rows, once per id.
+- **Character-create UI** - `MAX_RACES` and race buttons; buttons laid out by faction at
+  runtime (rows tighten for a 6th race per side); the race icons from BfA's atlas spliced
+  into `UI-CharacterCreate-Races.blp` (existing icons stay byte-identical); BfA's race
+  description; the template's racial text per faction; the look template's create/select
+  scene. Patches sit in tagged `-- [retroport]` blocks.
+- **Server** - the same DBC edits on the server's own DBCs, and `<Race>_race.sql`
+  (+ `_undo.sql`): `playercreateinfo` (+ action, item), `player_race_stats`, and the new
+  race's bit wherever the template's is set in skills, spells, quests, items, `spell_area`,
+  `mail_level_reward` and race conditions; `creature_model_info` for the new displays.
+
+Rebuild after changes with `--reuse` (skips the character conversion) and, once installed,
+`--replace`, which first removes the previous build of those race ids from the base DBCs.
+A rebuild over an installed package reproduces it exactly (rows, UI files, atlas).
 
 ## Status - validated vs. needs in-client testing
 
@@ -278,6 +320,9 @@ retroport/
   helms.py             helm race/gender variant discovery + batch conversion
   character/           BfA playable-race port: layouts (section remap), model (UV remap),
                        textures (composite/region conversion), convert (orchestration + DBC rows)
+  race/                playable race: tables (DBC edits + removal), glue (create-screen UI),
+                       icons (DXT atlas splice), sql (AzerothCore), build (orchestration)
+  mpq.py               read-only MPQ reader + the client's archive priority
   textures.py          armor-region / object texture resize for 3.3.5
   sql.py               AzerothCore creature_template_model repoint SQL
   safeio.py            atomic write-verify-replace, backups

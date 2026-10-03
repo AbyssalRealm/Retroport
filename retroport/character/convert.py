@@ -64,6 +64,10 @@ class CharacterResult(BaseModel):
     uv: dict = {}
     warnings: list[str] = []
     check: list[str] = []
+    # the race-independent customization data, for writing rows under any race id
+    sections: list[dict] = []
+    hair: list[dict] = []
+    facial: list[dict] = []
 
 
 @dataclass
@@ -283,6 +287,11 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
     missing = sorted({r["GeosetID"] for r in hair if r["GeosetID"] > 0 and r["GeosetID"] not in model_geosets})
     if missing:
         res.warnings.append(f"hair geosets {missing} are referenced but not in the model")
+    res.sections = [{"section": r.section, "variation": r.variation, "color": r.color, "flags": r.flags,
+                     "textures": list(r.textures)} for r in out_rows]
+    res.hair = [{"VariationID": r["VariationID"], "GeosetID": r["GeosetID"], "Showscalp": r["Showscalp"]}
+                for r in hair]
+    res.facial = [{"VariationID": r["VariationID"], "Geoset": list(r["Geoset"])} for r in facial]
 
     # --- DBCs ---
     if dbc_dir:
@@ -312,13 +321,26 @@ def _write_dbcs(dbc_dir: str, out_dir: str, race_id: int, sex_id: int, rows: lis
 
     cs, hg, fh = (load("CharSections.dbc", CHARSECTIONS_FIELDS), load("CharHairGeosets.dbc", HAIR_FIELDS),
                   load("CharacterFacialHairStyles.dbc", FACIAL_FIELDS))
+    sections = [r if isinstance(r, dict) else {"section": r.section, "variation": r.variation, "color": r.color,
+                                               "flags": r.flags, "textures": r.textures} for r in rows]
+    counts = append_customization(cs, hg, fh, race_id, sex_id, sections, hair, facial)
+    os.makedirs(out_dir, exist_ok=True)
+    cs.save(os.path.join(out_dir, "CharSections.dbc"))
+    hg.save(os.path.join(out_dir, "CharHairGeosets.dbc"))
+    fh.save(os.path.join(out_dir, "CharacterFacialHairStyles.dbc"))
+    return counts
+
+
+def append_customization(cs: DBCFile, hg: DBCFile, fh: DBCFile, race_id: int, sex_id: int,
+                         sections: list[dict], hair: list[dict], facial: list[dict]) -> dict[str, int]:
+    """Append one race/sex's CharSections, CharHairGeosets and CharacterFacialHairStyles rows."""
     if any(r[1] == race_id and r[2] == sex_id for r in cs.records):
         raise DBCError(f"CharSections already has rows for race {race_id} sex {sex_id}; "
                        "use another --race-id or start from a template without them")
     next_id = cs.max_id() + 1
-    for r in rows:
-        cs.add_record([next_id, race_id, sex_id, r.section, *(cs.add_string(t) for t in r.textures),
-                       r.flags, r.variation, r.color])
+    for r in sections:
+        cs.add_record([next_id, race_id, sex_id, r["section"], *(cs.add_string(t) for t in r["textures"]),
+                       r["flags"], r["variation"], r["color"]])
         next_id += 1
     next_id = hg.max_id() + 1
     for r in hair:
@@ -327,8 +349,4 @@ def _write_dbcs(dbc_dir: str, out_dir: str, race_id: int, sex_id: int, rows: lis
     for r in facial:
         geo = [g if g >= 0 else 0 for g in (list(r["Geoset"]) + [0] * 5)[:5]]
         fh.add_record([race_id, sex_id, r["VariationID"], *geo])
-    os.makedirs(out_dir, exist_ok=True)
-    cs.save(os.path.join(out_dir, "CharSections.dbc"))
-    hg.save(os.path.join(out_dir, "CharHairGeosets.dbc"))
-    fh.save(os.path.join(out_dir, "CharacterFacialHairStyles.dbc"))
-    return {"CharSections": len(rows), "CharHairGeosets": len(hair), "CharacterFacialHairStyles": len(facial)}
+    return {"CharSections": len(sections), "CharHairGeosets": len(hair), "CharacterFacialHairStyles": len(facial)}
