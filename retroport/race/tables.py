@@ -32,7 +32,11 @@ from ..dbc import DBCError, DBCFile, RawDBC
 
 FIELDS = {"ChrRaces": 69, "CreatureDisplayInfo": 16, "CreatureModelData": 28, "SkillRaceClassInfo": 8,
           "SkillLineAbility": 14, "Faction": 57, "EmotesTextSound": 5, "VocalUISounds": 7, "NameGen": 4,
-          "CharSections": 10, "CharHairGeosets": 6, "CharacterFacialHairStyles": 8, "BarberShopStyle": 40}
+          "CharSections": 10, "CharHairGeosets": 6, "CharacterFacialHairStyles": 8, "BarberShopStyle": 40,
+          "SoundEntries": 30, "CreatureSoundData": 38}
+# CreatureSoundData columns that hold SoundEntries ids (sounds.CSD_KIT_COLUMNS)
+CSD_SOUND_COLUMNS = (1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 26, 27, 28, 29,
+                     30, 33, 34, 35, 36)
 MASK_FIELDS = {"SkillRaceClassInfo": (2,), "SkillLineAbility": (3, 5), "Faction": (2, 3, 4, 5)}
 RACE_ROW_FIELDS = {"EmotesTextSound": 2, "VocalUISounds": 2, "NameGen": 2}
 OWNED_ROW_FIELDS = {**RACE_ROW_FIELDS, "BarberShopStyle": 37}       # rows strip_race removes by race
@@ -229,8 +233,15 @@ def strip_race(tables: dict[str, object], race_id: int) -> dict[str, int]:
             if before != len(d.records):
                 removed[name] = before - len(d.records)
 
+    # the race's voice (sounds.py): SoundEntries rows its rows point at, removed below once no
+    # remaining row uses them - the other faction's twin shares them until it goes too
+    ets, vui, csd, se = (tables.get(t) for t in ("EmotesTextSound", "VocalUISounds", "CreatureSoundData", "SoundEntries"))
+    sounds = {r[4] for r in ets.records if r[2] == race_id} if ets is not None else set()
+    sounds |= {v for r in vui.records if r[2] == race_id for v in r[3:7]} if vui is not None else set()
+
     chr_races = tables.get("ChrRaces")
     row = chr_races.find_by_id(race_id) if chr_races is not None else None
+    file_string = chr_races.get_string(row[11]) if row is not None else ""
     if row is not None:
         displays = {row[4], row[5]}
         others = {d for r in chr_races.records if r[0] != race_id for d in (r[4], r[5])}
@@ -240,7 +251,14 @@ def strip_race(tables: dict[str, object], race_id: int) -> dict[str, int]:
             drop("CreatureDisplayInfo", lambda r: r[0] not in displays - others)
             still_used = {r[1] for r in cdi.records}
             if cmd is not None:
-                drop("CreatureModelData", lambda r: r[0] not in models - still_used)
+                gone = models - still_used
+                csd_rows = {r[13] for r in cmd.records if r[0] in gone}
+                drop("CreatureModelData", lambda r: r[0] not in gone)
+                # combat-sound rows only the race's models used (Human's stay: HumanMale uses them)
+                csd_rows -= {r[13] for r in cmd.records} | {r[2] for r in cdi.records}
+                if csd is not None and csd_rows:
+                    sounds |= {r[c] for r in csd.records if r[0] in csd_rows for c in CSD_SOUND_COLUMNS}
+                    drop("CreatureSoundData", lambda r: r[0] not in csd_rows)
         drop("ChrRaces", lambda r: r[0] != race_id)
     drop("CharBaseInfo", lambda r: r[0] != race_id)
     drop("CharStartOutfit", lambda r: r[4] != race_id)
@@ -249,6 +267,16 @@ def strip_race(tables: dict[str, object], race_id: int) -> dict[str, int]:
     drop("CharacterFacialHairStyles", lambda r: r[0] != race_id)
     for name, rf in OWNED_ROW_FIELDS.items():
         drop(name, lambda r, rf=rf: r[rf] != race_id)
+    if se is not None and file_string and sounds - {0}:
+        in_use = {r[4] for r in ets.records} if ets is not None else set()
+        in_use |= {v for r in vui.records for v in r[3:7]} if vui is not None else set()
+        in_use |= {r[c] for r in csd.records for c in CSD_SOUND_COLUMNS} if csd is not None else set()
+        # only rows the voice port wrote (named after the race) - a sound cloned from the
+        # look template is Blizzard's and stays
+        ours = {r[0] for r in se.records if r[0] in sounds - in_use
+                and se.get_string(r[2]).startswith(file_string)}
+        if ours:
+            drop("SoundEntries", lambda r: r[0] not in ours)
     for name, fields in MASK_FIELDS.items():
         d = tables.get(name)
         if d is None:

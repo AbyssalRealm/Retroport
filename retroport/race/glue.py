@@ -165,7 +165,13 @@ def patch_glue_parent(lua: str, aliases: dict[str, str], tag: str) -> str:
     if "function SetBackgroundModel" not in lua:
         raise ValueError("SetBackgroundModel not found in GlueParent.lua")
     lua = put_block(lua, "background aliases", BACKGROUND_LUA)
-    lines = [f'GLUE_BACKGROUND_ALIASES["{k.upper()}"] = {lua_string(v)};' for k, v in aliases.items()]
+    lines = []
+    for k, v in aliases.items():
+        lines.append(f'GLUE_BACKGROUND_ALIASES["{k.upper()}"] = {lua_string(v)};')
+        # CharacterSelect_OnShow plays GlueAmbienceTracks[<the race's own scene name>] directly, and
+        # PlayGlueAmbience(nil) is a Lua error when coming back from character create.
+        lines.append(f'GlueAmbienceTracks["{k.upper()}"] = GlueAmbienceTracks["{k.upper()}"] '
+                     f'or GlueAmbienceTracks[{lua_string(v.upper())}];')
     return put_block(lua, f"background {tag}", "\n".join(lines))
 
 

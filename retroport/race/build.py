@@ -31,20 +31,23 @@ from ..dbc import DBCError, DBCFile, RawDBC, load_dbc
 from ..formats import blp
 from ..mpq import ClientData
 from ..safeio import write_verified
-from . import glue, icons, sql
+from . import glue, icons, sounds, sql
 from .tables import (ALLIANCE, FIELDS, HORDE, BarberStyle, RaceSpec, add_barber_styles, add_base_info, add_chr_race,
                      add_displays, add_race_bit, clone_race_rows, clone_start_outfits, free_ids, playable_races,
                      strip_race)
 
 CLIENT_TABLES = ["ChrRaces", "CharBaseInfo", "CharStartOutfit", "SkillRaceClassInfo", "SkillLineAbility", "Faction",
                  "CreatureModelData", "CreatureDisplayInfo", "CharSections", "CharHairGeosets",
-                 "CharacterFacialHairStyles", "EmotesTextSound", "VocalUISounds", "NameGen", "BarberShopStyle"]
+                 "CharacterFacialHairStyles", "EmotesTextSound", "VocalUISounds", "NameGen", "BarberShopStyle",
+                 "SoundEntries", "CreatureSoundData"]
 SERVER_TABLES = ["ChrRaces", "CharBaseInfo", "CharStartOutfit", "SkillRaceClassInfo", "SkillLineAbility", "Faction",
                  "CreatureModelData", "CreatureDisplayInfo", "EmotesTextSound", "BarberShopStyle"]
 RAW_TABLES = {"CharBaseInfo", "CharStartOutfit"}
 GLUE = "Interface\\GlueXML\\"
 ATLAS = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Races.blp"
 SEXES = ("Male", "Female")
+VOICE_DB2 = ("soundkit", "soundkitentry", "emotestext", "emotestextsound", "vocaluisounds", "creaturesounddata",
+             "creaturedisplayinfo", "creaturemodeldata")
 
 
 class RaceBuildResult(BaseModel):
@@ -76,8 +79,11 @@ def _is_inside(path: str, parent: str) -> bool:
 
 def _apply(tables: dict, specs: list[RaceSpec], *, name: str, cfs: str, look: int, ids: tuple[int, int, int, int],
            characters: dict[int, CharacterResult] | None,
-           barber: dict[int, list[BarberStyle]] | None = None) -> dict[str, int]:
-    """Add every spec to one set of tables (client or server); returns rows touched per table."""
+           barber: dict[int, list[BarberStyle]] | None = None, voice: sounds.Voice | None = None,
+           sound_ids: dict[int, int] | None = None, csd_ids: dict[int, int] | None = None) -> dict[str, int]:
+    """Add every spec to one set of tables (client or server); returns rows touched per table.
+    With ``voice`` the race gets its own sounds (ids from sounds.assign_ids, shared by client and
+    server); without, it speaks with the look template's."""
     counts: dict[str, int] = {}
 
     def bump(k: str, n: int) -> None:
@@ -95,6 +101,11 @@ def _apply(tables: dict, specs: list[RaceSpec], *, name: str, cfs: str, look: in
     add_displays(tables["CreatureModelData"], tables["CreatureDisplayInfo"], (look_row[4], look_row[5]), models, ids)
     bump("CreatureModelData", 2)
     bump("CreatureDisplayInfo", 2)
+    if voice is not None and "SoundEntries" in tables:
+        bump("SoundEntries", sounds.add_sound_entries(tables["SoundEntries"], voice, sound_ids))
+    if voice is not None and voice.creature and "CreatureSoundData" in tables:
+        bump("CreatureSoundData", sounds.add_creature_sounds(tables["CreatureSoundData"], tables["CreatureModelData"],
+                                                             voice, sound_ids, csd_ids, ids[:2]))
     for s in specs:
         add_chr_race(chr_races, s, name=name, file_string=cfs, male_display=ids[2], female_display=ids[3],
                      look_template=look)
@@ -104,7 +115,13 @@ def _apply(tables: dict, specs: list[RaceSpec], *, name: str, cfs: str, look: in
         for t in ("SkillRaceClassInfo", "SkillLineAbility", "Faction"):
             bump(t, add_race_bit(tables[t], t, s.template_bit, s.bit))
         for t in ("EmotesTextSound", "VocalUISounds", "NameGen"):
-            if t in tables:
+            if t not in tables:
+                continue
+            if t == "EmotesTextSound" and voice is not None and voice.emotes:
+                bump(t, sounds.add_emote_sounds(tables[t], voice, s.race_id, sound_ids))
+            elif t == "VocalUISounds" and voice is not None and voice.vocal:
+                bump(t, sounds.add_vocal_sounds(tables[t], voice, s.race_id, sound_ids))
+            else:
                 bump(t, clone_race_rows(tables[t], t, look, s.race_id))
         if barber and "BarberShopStyle" in tables:
             bump("BarberShopStyle", add_barber_styles(tables["BarberShopStyle"], s.race_id, barber[s.race_id]))
@@ -203,9 +220,11 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
                                                       "barbershopstyle")}))
     barbers = [ctables["BarberShopStyle"]] + ([stables["BarberShopStyle"]] if stables else [])
     barber = _barber_styles(bfa, race, characters, specs, barbers, res.warnings)
+    voice, sound_ids, csd_ids = _race_voice(bfa, race, cfs, client, ctables, client_out, listfile, res, log)
     log(f"Client: adding races {[s.race_id for s in specs]} (displays {ids[2]}/{ids[3]})")
     res.rows["client"] = _apply(ctables, specs, name=name, cfs=cfs, look=look_template, ids=ids,
-                                characters=characters, barber=barber)
+                                characters=characters, barber=barber, voice=voice, sound_ids=sound_ids,
+                                csd_ids=csd_ids)
     layout = charsections_layout_problems(ctables["CharSections"], {s.race_id for s in specs})
     if layout:
         raise DBCError("CharSections rows for the new race are not laid out the way the client's "
@@ -217,7 +236,7 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
     if stables:
         log("Server: adding the same races")
         res.rows["server"] = _apply(stables, specs, name=name, cfs=cfs, look=look_template, ids=ids,
-                                    characters=None, barber=barber)
+                                    characters=None, barber=barber, voice=voice, sound_ids=sound_ids)
         sdir = os.path.join(out_dir, "server", "dbc")
         os.makedirs(sdir, exist_ok=True)
         for t, d in stables.items():
@@ -343,6 +362,36 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
     return res
 
 
+def _race_voice(bfa: BfaInstall, race: str, cfs: str, client: ClientData, ctables: dict, client_out: str,
+                listfile: str, res: RaceBuildResult, log: Callable[[str], None]
+                ) -> tuple[sounds.Voice | None, dict[int, int], dict[int, int]]:
+    """The race's own voice from BfA (sounds.py), its files extracted under ``client_out`` - or
+    None, and the race speaks with the look template's voice."""
+    try:
+        bfa.fdids.update(_find_listfile_paths(listfile, {f"dbfilesclient/{t}.db2" for t in VOICE_DB2}))
+        hit = client.find("DBFilesClient\\EmotesText.dbc")
+        if hit is None:
+            raise DBCError("EmotesText.dbc is not in any archive of the client")
+        emotes = {r[0] for r in DBCFile.from_bytes(hit[1]).records}
+        vocal_enums = {r[1] for r in ctables["VocalUISounds"].records}
+        bfa_race, _row = _find_race(bfa, race)
+        voice = sounds.collect_voice(bfa.table, bfa_race, cfs, emotes=emotes, vocal_enums=vocal_enums,
+                                     names=lambda fdids: sounds.listfile_names(listfile, fdids))
+        files = sounds.write_voice_files(bfa.read, voice, client_out)
+    except (ValueError, KeyError) as e:                          # DBCError is a ValueError
+        res.warnings.append(f"voice: {e}; the race speaks with the look template's voice")
+        return None, {}, {}
+    res.files += files
+    res.warnings += [f"voice: {s}" for s in voice.skipped]
+    if not voice.kits:
+        res.warnings.append("voice: no sound of the race could be extracted; it speaks with the look template's voice")
+        return None, {}, {}
+    sound_ids, csd_ids = sounds.assign_ids(voice, ctables["SoundEntries"], ctables["CreatureSoundData"])
+    log(f"  voice: {len(voice.kits)} sounds ({len(files)} files): {len(voice.emotes)} emote sounds, "
+        f"{len(voice.vocal)} spoken errors, combat sounds for {len(voice.creature)} sex(es)")
+    return voice, sound_ids, csd_ids
+
+
 def _check_charsections_base(client: ClientData, cs: DBCFile, source: str, skip_races: set[int],
                              sample: int = 60) -> None:
     """Refuse a CharSections whose textures the client doesn't have: building on it would point
@@ -397,8 +446,12 @@ def _write_install(out_dir: str, res: RaceBuildResult, specs: list[RaceSpec], se
              "  `retroport race ... --reuse --replace` and the package is rebuilt on your current copy.", "",
              "BY HAND: copy everything inside client\\ into your top folder patch (e.g. Data\\patch-H.MPQ\\);",
              "  the DBCs were built on the copies your client loads (sources below), so they keep what",
-             "  was in them as long as you haven't changed those files since this build.", "",
-             "SERVER"]
+             "  was in them as long as you haven't changed those files since this build.", ""]
+    if any(s.race_id >= 22 for s in specs):
+        lines += ["CLIENT EXTENSION: the client plays emote sounds (/laugh, /cheer, ...) for race ids 0-21 only;",
+                  "  races 22+ need the WarcraftXL extension wxl-race-emote-sounds (retroport-tool\\native\\",
+                  "  wxl-race-emote-sounds) in <WoW>\\Extensions\\wxl-race-emote-sounds\\.", ""]
+    lines += ["SERVER"]
     if server_dbc_dir:
         lines += [f"  1. server\\dbc\\*.dbc go into {server_dbc_dir} (retroport install does this with backups)."]
     else:

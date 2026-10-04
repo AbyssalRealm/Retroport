@@ -59,14 +59,19 @@ FACIAL_SLOT_GROUPS = (1, 3, 2, 16, 17)
 # 3.3.5 switches geoset groups 0-17 and draws EVERY variant of the rest: a Kul Tiran's floating
 # bulky belt (1803) showed with a skin texture next to its stitched waist (1802).
 MANAGED_GEOSET_GROUPS = 18
+# A piece fills a hole in the body when (nearly) all of its open edges meet open edges of the
+# body. A belt band welded to the body along one side (Kul Tiran 1802) meets half of them.
+HOLE_FILL_RATIO = 0.75
 
 
-def unmanaged_geoset_remap(geosets: set[int], stitched: set[int] | None = None) -> dict[int, int | None]:
+def unmanaged_geoset_remap(geosets: set[int], fills: dict[int, float] | None = None) -> dict[int, int | None]:
     """Groups 3.3.5 never switches (BfA's 18 belt, 20 feet, 22 torso, ...) would draw every variant
-    at once. Keep one variant per group as always-on body (0): the default (xx01) when it is part of
-    the body surface, else the first variant stitched to the body (sharing vertices with geoset 0,
-    e.g. the waist 1802 - a hole without it), else none. Floating overlays (a bulky belt) are hidden.
-    ``stitched`` None means "unknown": then xx01 (or the lowest) is kept."""
+    at once. Keep one variant per group as always-on body (0): the one that fills a hole in the
+    default body (``fills``, from hole_fill_ratios) - the default xx01 when several do (2001 feet
+    over the 2002 alternative) - and hide the rest. A group none of whose pieces fills a hole is
+    hidden whole: Kul Tiran belts (1802 band, 1803 sash) lie on a closed body and only belong
+    under belts that ask for them, which 3.3.5 cannot do. ``fills`` None means "unknown": then
+    xx01 (or the lowest) is kept."""
     groups: dict[int, list[int]] = {}
     for g in geosets:
         if g // 100 >= MANAGED_GEOSET_GROUPS:
@@ -75,20 +80,20 @@ def unmanaged_geoset_remap(geosets: set[int], stitched: set[int] | None = None) 
     for grp, ids in groups.items():
         ids.sort()
         default = grp * 100 + 1
-        if stitched is None:
+        if fills is None:
             keep = default if default in ids else ids[0]
-        elif default in ids and default in stitched:
-            keep = default
         else:
-            keep = next((i for i in ids if i in stitched), None)
+            filling = [i for i in ids if fills.get(i, 0.0) >= HOLE_FILL_RATIO]
+            keep = default if default in filling else max(filling, key=lambda i: (fills[i], -i), default=None)
         out.update({i: (0 if i == keep else None) for i in ids})
     return out
 
 
-def stitched_geosets(m2_path: str, skin_path: str, candidates: set[int]) -> set[int]:
-    """Candidates whose surface shares vertex positions with the default body: geoset 0 plus each
-    switched group's default piece (401 hands, 501 lower legs, 1301 legs, ...) - bare feet attach
-    to the lower legs, not to the torso."""
+def hole_fill_ratios(m2_path: str, skin_path: str, candidates: set[int]) -> dict[int, float]:
+    """For each candidate piece, the share of its open edges that close an open edge of the default
+    body: geoset 0 plus each switched group's default piece (401 hands, 501 lower legs, 1301 legs,
+    ...). 1.0 is a piece that fills a hole exactly (Kul Tiran 2001 feet, 2201 torso); a piece
+    laid on the body meets few or none, and a closed one (a sash) has no open edges at all (0)."""
     with open(m2_path, "rb") as fh:
         m2 = fh.read()
     with open(skin_path, "rb") as fh:
@@ -99,22 +104,37 @@ def stitched_geosets(m2_path: str, skin_path: str, candidates: set[int]) -> set[
     n_s, s_off = struct.unpack_from("<II", skin, 0x1C)
     lookup = struct.unpack_from(f"<{n_l}H", skin, l_off)
     tris = struct.unpack_from(f"<{n_t}H", skin, t_off)
-    points: dict[int, set] = {}
+
+    def point(k: int):
+        v = lookup[tris[k]]
+        x, y, z = struct.unpack_from("<3f", m2, v_off + v * 48) if v < n_v else (0.0, 0.0, 0.0)
+        return round(x, 4), round(y, 4), round(z, 4)
+
+    # edge (by position: pieces carry their own copies of shared vertices) -> triangles using it
+    edges: dict[int, dict[frozenset, int]] = {}
     for i in range(n_s):
         sid, level, _vs, _vc, start, count = struct.unpack_from("<HHHHHH", skin, s_off + i * 48)
         base_piece = sid == 0 or (sid // 100 < MANAGED_GEOSET_GROUPS and sid % 100 == 1)
         if not base_piece and sid not in candidates:
             continue
-        sid = 0 if base_piece else sid
+        uses = edges.setdefault(0 if base_piece else sid, {})
         first = (level << 16) | start
-        pts = points.setdefault(sid, set())
-        for k in range(first, min(first + count, n_t)):
-            v = lookup[tris[k]]
-            if v < n_v:
-                x, y, z = struct.unpack_from("<3f", m2, v_off + v * 48)
-                pts.add((round(x, 4), round(y, 4), round(z, 4)))
-    body = points.get(0, set())
-    return {g for g in candidates if points.get(g, set()) & body}
+        for k in range(first, min(first + count, n_t) - 2, 3):
+            a, b, c = point(k), point(k + 1), point(k + 2)
+            for e in ((a, b), (b, c), (c, a)):
+                if e[0] != e[1]:
+                    key = frozenset(e)
+                    uses[key] = uses.get(key, 0) + 1
+
+    def open_edges(piece: int) -> set[frozenset]:
+        return {e for e, n in edges.get(piece, {}).items() if n == 1}
+
+    body = open_edges(0)
+    out = {}
+    for g in candidates:
+        own = open_edges(g)
+        out[g] = len(own & body) / len(own) if own else 0.0
+    return out
 
 
 def facial_styles(facial: list[dict], extras: list[dict], eyes_geoset: int | None) -> list[dict]:
@@ -280,7 +300,7 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
         log(f"  cloak: dropped the empty emblem layer from {stripped} batch(es) (3.3.5 has no guild-emblem texture)")
     all_geosets = set(analyze_skin(skins[0]).geosets) if skins else set()
     unmanaged = {g for g in all_geosets if g // 100 >= MANAGED_GEOSET_GROUPS}
-    remap = unmanaged_geoset_remap(all_geosets, stitched_geosets(er.output, skins[0], unmanaged)) if unmanaged else {}
+    remap = unmanaged_geoset_remap(all_geosets, hole_fill_ratios(er.output, skins[0], unmanaged)) if unmanaged else {}
     if remap:
         fixup.remap_geosets(skins, remap)
         log("  geosets 3.3.5 does not switch: " + ", ".join(f"{g}->{'body' if v == 0 else 'hidden'}"

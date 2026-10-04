@@ -141,6 +141,8 @@ def test_glue_patches_are_rerunnable():
     p1 = glue.patch_glue_parent(parent, {"KULTIRAN": "Human"}, "KULTIRAN")
     assert glue.patch_glue_parent(p1, {"KULTIRAN": "Human"}, "KULTIRAN") == p1
     assert 'GLUE_BACKGROUND_ALIASES["KULTIRAN"] = "Human";' in p1
+    # character select plays the scene music by the race's own name (third client test)
+    assert 'GlueAmbienceTracks["KULTIRAN"] = GlueAmbienceTracks["KULTIRAN"] or GlueAmbienceTracks["HUMAN"];' in p1
 
     s1 = glue.patch_glue_strings('ABILITY_INFO_HUMAN1 = "- One.";\n', {"RACE_INFO_KULTIRAN": 'Say "ahoy"'}, "KULTIRAN")
     assert 'RACE_INFO_KULTIRAN = "Say \\"ahoy\\"";' in s1
@@ -241,14 +243,57 @@ def test_lettered_patches_rank_above_lettered_locale_patches(tmp_path, monkeypat
 
 # --------------------------------------------------------------------------- second client test
 
-def test_unmanaged_groups_keep_the_piece_stitched_to_the_body():
+def test_unmanaged_groups_keep_only_a_piece_that_fills_a_hole():
     from retroport.character.convert import unmanaged_geoset_remap
-    # belt: no 1801; the waist 1802 is stitched, the bulky 1803 floats -> keep 1802 only
-    assert unmanaged_geoset_remap({0, 1802, 1803}, {1802}) == {1802: 0, 1803: None}
-    # feet: the default 2001 is stitched -> keep it, hide the alternative
-    assert unmanaged_geoset_remap({0, 2001, 2002}, {2001, 2002}) == {2001: 0, 2002: None}
-    # nothing stitched and no default -> hide all
-    assert unmanaged_geoset_remap({0, 1902, 1903}, set()) == {1902: None, 1903: None}
+    # belt: the band 1802 is welded to the body along one side only, the sash 1803 is closed ->
+    # the body is whole without them, so both hide (third client test: a "3D belt" under armour)
+    assert unmanaged_geoset_remap({0, 1802, 1803}, {1802: 0.5, 1803: 0.0}) == {1802: None, 1803: None}
+    # feet: both fill the hole -> the default 2001, the alternative hides
+    assert unmanaged_geoset_remap({0, 2001, 2002}, {2001: 1.0, 2002: 0.83}) == {2001: 0, 2002: None}
+    # no default, one filler -> that one
+    assert unmanaged_geoset_remap({0, 1902, 1903}, {1902: 0.2, 1903: 1.0}) == {1902: None, 1903: 0}
+    assert unmanaged_geoset_remap({0, 1902, 1903}, {}) == {1902: None, 1903: None}
+
+
+def test_hole_fill_ratios_tell_a_patch_from_a_band_and_a_closed_piece(tmp_path):
+    from retroport.character.convert import hole_fill_ratios
+    from retroport.formats import structs as S
+    # a 3x3 grid of quads with the middle one missing (the body), the missing quad (2001), a band
+    # standing on one edge of the hole (1802) and a closed tetrahedron (1803)
+    pts = [(i, j, 0.0) for j in range(4) for i in range(4)] + [(1, 1, 1.0), (2, 1, 1.0)] + \
+          [(5, 5, 0.0), (6, 5, 0.0), (5, 6, 0.0), (5, 5, 1.0)]
+
+    def quad(a, b, c, d):
+        return [a, b, c, a, c, d]
+
+    def grid(i, j):
+        return quad(j * 4 + i, j * 4 + i + 1, (j + 1) * 4 + i + 1, (j + 1) * 4 + i)
+
+    pieces = {0: [k for j in range(3) for i in range(3) if (i, j) != (1, 1) for k in grid(i, j)],
+              2001: grid(1, 1), 1802: quad(5, 6, 17, 16),
+              1803: [18, 19, 20, 18, 21, 19, 19, 21, 20, 20, 21, 18]}
+    m2 = bytearray(0x200)
+    S.write_m2array(m2, S.HDR_VERTICES, len(pts), len(m2))
+    for p in pts:
+        rec = bytearray(48)
+        struct.pack_into("<3f", rec, 0, *p)
+        m2 += rec
+    skin = bytearray(0x30)
+    skin[0:4] = b"SKIN"
+    S.write_m2array(skin, S.SKIN_VERTICES, len(pts), len(skin))
+    skin += struct.pack(f"<{len(pts)}H", *range(len(pts)))
+    corners = [k for t in pieces.values() for k in t]
+    S.write_m2array(skin, S.SKIN_INDICES, len(corners), len(skin))
+    skin += struct.pack(f"<{len(corners)}H", *corners)
+    S.write_m2array(skin, S.SKIN_SUBMESHES, len(pieces), len(skin))
+    start = 0
+    for sid, t in pieces.items():
+        skin += struct.pack("<HHHHHH", sid, 0, 0, len(pts), start, len(t)) + bytes(36)
+        start += len(t)
+    (tmp_path / "x.m2").write_bytes(bytes(m2))
+    (tmp_path / "x00.skin").write_bytes(bytes(skin))
+    fills = hole_fill_ratios(str(tmp_path / "x.m2"), str(tmp_path / "x00.skin"), {1802, 1803, 2001})
+    assert fills == {2001: 1.0, 1802: 0.25, 1803: 0.0}
 
 
 def test_customization_rows_are_written_as_contiguous_sections():
