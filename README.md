@@ -310,6 +310,21 @@ edges meet the body's: Kul Tiran 2001 feet, 2201 torso) and hides the others. Th
 (18) is the client's, as in BfA: a belt whose display has `GeosetGroup[0]` 1 shows the Kul
 Tiran band (1802), 2 the sash (1803), 0 (most belts) only its texture.
 
+**Skins past 65,535 indices** - a Kul Tiran skin has 75k-101k indices; the high 16 bits of each
+submesh's start live in its `level` field (WarcraftXL draws that), but the client matches geosets
+on `(level << 16) | id`, so a switchable geoset starting past index 65,535 can never be hidden
+(every cape at once, death-knight eye glow on every class, both belt meshes). The converter keeps
+the body first (past the line a Kul Tiran's face stopped drawing) and the switchable geosets right
+after it; the rest is the WarcraftXL extension [`native/wxl-wide-skin-geosets`](native/wxl-wide-skin-geosets),
+which repeats each show/hide for the shifted ids. Both Kul Tirans need it.
+
+**Animations** - 3.3.5 blends into and out of a sequence only when it has flag 0x80; BfA blends
+everything and its flags came over without it, so /cry, /chicken (and /taunt), /shy and /dance
+snapped back to standing. BfA also repeats some emotes as short cycles, where 3.3.5 plays a one-shot
+sequence `replay` times (the male's /cry: a 0.67 s sob, played once). `race` copies the look
+template's blend bits per animation and repeats one-shot emotes shorter than 60% of the template's
+(`race/anims.py`); combat and movement animations are never repeated.
+
 **Helmets** - the race wears the look template's helmet models (`ClientPrefix`, `Hu`), which
 hang from attachment 11 as placed on that race's head: Human's sits at the top of the skull.
 BfA's Kul Tiran keeps its attachment on the head bone's pivot (the neck joint, 0.2 lower,

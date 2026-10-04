@@ -32,7 +32,7 @@ from ..dbc import DBCError, DBCFile, RawDBC, load_dbc
 from ..formats import blp
 from ..mpq import ClientData
 from ..safeio import write_verified
-from . import glue, helm, icons, sounds, sql
+from . import anims, glue, helm, icons, sounds, sql
 from .tables import (ALLIANCE, FIELDS, HORDE, BarberStyle, RaceSpec, add_barber_styles, add_base_info, add_chr_race,
                      add_displays, add_race_bit, clone_race_rows, clone_start_outfits, free_ids, playable_races,
                      strip_race)
@@ -195,6 +195,7 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
     _check_charsections_base(client, ctables["CharSections"], res.client_sources["CharSections"],
                              {s.race_id for s in specs})
     _place_helmets(client, ctables, look_template, cfs, client_out, res, log)
+    _align_animations(client, ctables, look_template, cfs, client_out, res, log)
     stables = {}
     if server_dbc_dir:
         for t in SERVER_TABLES:
@@ -404,34 +405,67 @@ def _race_voice(bfa: BfaInstall, race: str, cfs: str, client: ClientData, ctable
     return voice, sound_ids, csd_ids
 
 
+def _look_model(client: ClientData, ctables: dict, look: int, sex_id: int) -> tuple[str, bytes, bytes]:
+    """(path stem, .m2, 00.skin) of the look template's model for one sex, as the client loads it."""
+    chr_races, cdi, cmd = ctables["ChrRaces"], ctables["CreatureDisplayInfo"], ctables["CreatureModelData"]
+    look_row = chr_races.find_by_id(look)
+    display = cdi.find_by_id(look_row[4 + sex_id]) if look_row else None
+    model = cmd.find_by_id(display[1]) if display else None
+    if model is None:
+        raise helm.HelmError(f"no model row for the look template's {SEXES[sex_id].lower()} display")
+    path = cmd.get_string(model[2])
+    base = path[:path.rfind(".")]
+    m2, skin = client.find(base + ".m2"), client.find(base + "00.skin")
+    if not m2 or not skin:
+        raise helm.HelmError(f"{base}.m2 or its 00.skin is not in the client")
+    return base, m2[1], skin[1]
+
+
 def _place_helmets(client: ClientData, ctables: dict, look: int, cfs: str, client_out: str,
                    res: RaceBuildResult, log: Callable[[str], None]) -> None:
     """Move each model's helmet attachment to where the look template's helmets expect it
     (helm.py): the race wears that template's helmet models."""
-    chr_races, cdi, cmd = ctables["ChrRaces"], ctables["CreatureDisplayInfo"], ctables["CreatureModelData"]
-    look_row = chr_races.find_by_id(look)
     for sex_id, sx in enumerate(SEXES):
         try:
-            display = cdi.find_by_id(look_row[4 + sex_id]) if look_row else None
-            model = cmd.find_by_id(display[1]) if display else None
-            if model is None:
-                raise helm.HelmError(f"no model row for the look template's {sx.lower()} display")
-            path = cmd.get_string(model[2])
-            base = path[:path.rfind(".")]
-            t_m2, t_skin = client.find(base + ".m2"), client.find(base + "00.skin")
-            if not t_m2 or not t_skin:
-                raise helm.HelmError(f"{base}.m2 or its 00.skin is not in the client")
+            base, t_m2, t_skin = _look_model(client, ctables, look, sex_id)
             own = os.path.join(client_out, "Character", cfs, sx, f"{cfs}{sx}")
             with open(own + ".m2", "rb") as fh:
                 m2 = fh.read()
             with open(own + "00.skin", "rb") as fh:
                 skin = fh.read()
-            data, old, new = helm.place_helm_attachment(m2, skin, t_m2[1], t_skin[1])
+            data, old, new = helm.place_helm_attachment(m2, skin, t_m2, t_skin)
             write_verified(own + ".m2", data)
             log(f"  {sx.lower()} helmet attachment {tuple(round(v, 3) for v in old)} -> "
                 f"{tuple(round(v, 3) for v in new)} (where {base.rsplit(chr(92), 1)[-1]}'s helmets sit)")
         except (helm.HelmError, struct.error, OSError) as e:
             res.warnings.append(f"{sx} helmet attachment left as converted: {e}")
+
+
+def _align_animations(client: ClientData, ctables: dict, look: int, cfs: str, client_out: str,
+                      res: RaceBuildResult, log: Callable[[str], None]) -> None:
+    """Blend bits and one-shot emote lengths from the look template's sequences (anims.py)."""
+    try:
+        em, ad = client.find("DBFilesClient\\Emotes.dbc"), client.find("DBFilesClient\\AnimationData.dbc")
+        if not em or not ad:
+            raise helm.HelmError("Emotes.dbc or AnimationData.dbc is not in the client")
+        ad_dbc = DBCFile.from_bytes(ad[1])
+        one_shot = anims.one_shot_emotes(DBCFile.from_bytes(em[1]).records,
+                                         {r[0]: ad_dbc.get_string(r[1]) for r in ad_dbc.records})
+    except (helm.HelmError, ValueError) as e:
+        res.warnings.append(f"animations left as converted: {e}")
+        return
+    for sex_id, sx in enumerate(SEXES):
+        try:
+            _base, t_m2, _t_skin = _look_model(client, ctables, look, sex_id)
+            own = os.path.join(client_out, "Character", cfs, sx, f"{cfs}{sx}.m2")
+            with open(own, "rb") as fh:
+                m2 = fh.read()
+            data, changes = anims.align_sequences(m2, t_m2, one_shot)
+            if changes:
+                write_verified(own, data)
+                log(f"  {sx.lower()} animations like the look template's: " + "; ".join(changes))
+        except (helm.HelmError, struct.error, OSError) as e:
+            res.warnings.append(f"{sx} animations left as converted: {e}")
 
 
 def _check_charsections_base(client: ClientData, cs: DBCFile, source: str, skip_races: set[int],

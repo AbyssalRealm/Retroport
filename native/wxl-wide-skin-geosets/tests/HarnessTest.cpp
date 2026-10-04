@@ -48,12 +48,16 @@ namespace
         va_end(ap);
     }
 
+    // like WarcraftXL: HookAttach only registers the detour; the chain's "original" pointer is
+    // filled in later, when the core enables the hooks
+    void** g_slot = nullptr;
+
     int __cdecl HookAttach(const char* name, uintptr_t target, void* detour, void** original, int)
     {
         std::printf("hook %s at 0x%08X\n", name, static_cast<unsigned>(target));
         if (target != 0x0082C7C0) return 0;
         g_detour = detour;
-        *original = reinterpret_cast<void*>(&FakeSetGeometryVisible);
+        g_slot = original;
         return 1;
     }
 
@@ -83,9 +87,13 @@ int main(int argc, char** argv)
     api.apiVersion = WXL_API_VERSION;
     api.Log = &Log;
     api.HookAttach = &HookAttach;
-    Expect("WXL_Load succeeds", load(&api), 1);
-    if (!g_detour) { std::printf("detour not attached\n"); return 1; }
+    Expect("WXL_Load succeeds before the chain is enabled", load(&api), 1);
+    if (!g_detour || !g_slot) { std::printf("detour not attached\n"); return 1; }
     auto set = reinterpret_cast<void(__fastcall*)(void*, void*, uint32_t, uint32_t, uint32_t)>(g_detour);
+    Instance early{};
+    set(&early, nullptr, 0, 2000, 0);                       // a call before the chain is live: ignored
+    Expect("before the chain is enabled: nothing called", g_calls, 0);
+    *g_slot = reinterpret_cast<void*>(&FakeSetGeometryVisible);
 
     // a Kul Tiran female-like skin: body and an eye below the 16-bit line, the rest past it
     Submesh subs[6] = {};

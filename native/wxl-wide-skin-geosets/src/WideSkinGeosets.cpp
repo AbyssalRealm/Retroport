@@ -85,6 +85,7 @@ namespace
     void __fastcall SetGeometryVisibleDetour(void* instance, void* edx, uint32_t idStart, uint32_t idEnd,
                                              uint32_t visible)
     {
+        if (!g_next) return;
         g_next(instance, edx, idStart, idEnd, visible);
         // not initialized yet: the client queued the call and replays it through here once it is
         if (!instance || idEnd > kU16 || idStart > idEnd || !(Read<uint32_t>(instance, kOffInstInitFlags) & 1))
@@ -100,7 +101,7 @@ extern "C"
     __declspec(dllexport) const WXL_PluginInfo* __cdecl WXL_Query(void)
     {
         static const WXL_PluginInfo info = {
-            sizeof(WXL_PluginInfo), WXL_API_VERSION, kTag, 1, WXL_CLIENT_BUILD,
+            sizeof(WXL_PluginInfo), WXL_API_VERSION, kTag, 2, WXL_CLIENT_BUILD,
         };
         return &info;
     }
@@ -112,7 +113,9 @@ extern "C"
         const int ok = api->HookAttach("CM2Model::SetGeometryVisible", kSetGeometryVisible,
                                        reinterpret_cast<void*>(&SetGeometryVisibleDetour),
                                        reinterpret_cast<void**>(&g_next), WXL_HOOK_DEFAULT_PRIORITY);
-        if (!ok || !g_next)
+        // HookAttach's result is the verdict: WarcraftXL fills g_next in later, when it enables the
+        // hook chain, so it is still null here
+        if (!ok)
         {
             api->Log(WXL_LOG_ERROR, kTag, "could not detour CM2Model::SetGeometryVisible at 0x%08X", kSetGeometryVisible);
             return 0;

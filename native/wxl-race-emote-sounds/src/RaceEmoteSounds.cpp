@@ -114,13 +114,13 @@ namespace
 
     uint32_t __cdecl GetTextEmoteSoundIDDetour(uint32_t emote, uint32_t race, uint32_t sex)
     {
-        if (race < kNativeRaceLimit) return g_nextSoundId(emote, race, sex);
+        if (race < kNativeRaceLimit) return g_nextSoundId ? g_nextSoundId(emote, race, sex) : 0u;
         return sex < 2 ? Lookup(emote, race, sex) : 0u;
     }
 
     int32_t __cdecl GetTextEmoteSoundIndexDetour(uint32_t emote, uint32_t race, uint32_t sex)
     {
-        if (race < kNativeRaceLimit) return g_nextSoundIndex(emote, race, sex);
+        if (race < kNativeRaceLimit) return g_nextSoundIndex ? g_nextSoundIndex(emote, race, sex) : -1;
         const uint32_t sound = sex < 2 ? Lookup(emote, race, sex) : 0u;
         // what the native function does once it has the sound: no kit, or a kit without files,
         // is "no sound" (-1); otherwise the chooser picks the file (mode 2, nothing forced)
@@ -138,7 +138,7 @@ extern "C"
     __declspec(dllexport) const WXL_PluginInfo* __cdecl WXL_Query(void)
     {
         static const WXL_PluginInfo info = {
-            sizeof(WXL_PluginInfo), WXL_API_VERSION, kTag, 2, WXL_CLIENT_BUILD,
+            sizeof(WXL_PluginInfo), WXL_API_VERSION, kTag, 3, WXL_CLIENT_BUILD,
         };
         return &info;
     }
@@ -151,7 +151,10 @@ extern "C"
         const int idOk = api->HookAttach("SI2::GetTextEmoteSoundID", kGetTextEmoteSoundID,
                                          reinterpret_cast<void*>(&GetTextEmoteSoundIDDetour),
                                          reinterpret_cast<void**>(&g_nextSoundId), WXL_HOOK_DEFAULT_PRIORITY);
-        if (!idOk || !g_nextSoundId)
+        // HookAttach's result is the verdict: WarcraftXL fills g_nextSoundId in later, when it enables
+        // the hook chain, so it is still null here (checking it made the extension report a failure
+        // and "decline" while its hooks went live anyway)
+        if (!idOk)
         {
             api->Log(WXL_LOG_ERROR, kTag, "could not detour SI2::GetTextEmoteSoundID at 0x%08X", kGetTextEmoteSoundID);
             return 0;
@@ -159,7 +162,7 @@ extern "C"
         const int indexOk = api->HookAttach("SI2::GetTextEmoteSoundIndex", kGetTextEmoteSoundIndex,
                                             reinterpret_cast<void*>(&GetTextEmoteSoundIndexDetour),
                                             reinterpret_cast<void**>(&g_nextSoundIndex), WXL_HOOK_DEFAULT_PRIORITY);
-        if (!indexOk || !g_nextSoundIndex)
+        if (!indexOk)
             api->Log(WXL_LOG_WARN, kTag, "could not detour SI2::GetTextEmoteSoundIndex at 0x%08X: races 22+ hear "
                                          "emotes but send no variant", kGetTextEmoteSoundIndex);
         api->Log(WXL_LOG_INFO, kTag, "text-emote sounds enabled for races %u and up", kNativeRaceLimit);

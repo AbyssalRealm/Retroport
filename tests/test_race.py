@@ -367,10 +367,10 @@ def _wide_skin(tmp_path, parts, tail=0):
     return p
 
 
-def test_wide_skins_put_switchable_geosets_below_the_16_bit_line(tmp_path):
+def test_wide_skins_keep_the_body_first_then_switchable_geosets(tmp_path):
     from retroport.convert.fixup import order_skin_indices
-    # body first, an eye glow and a cape past index 65,535, an undrawn torso variant
-    p = _wide_skin(tmp_path, [(0, 60000, True), (1703, 3000, True), (2202, 9000, False), (1502, 3000, True)])
+    # an undrawn torso variant between the body and an eye glow / cape that started past 65,535
+    p = _wide_skin(tmp_path, [(0, 60000, True), (2202, 9000, False), (1703, 3000, True), (1502, 3000, True)])
     rep, = order_skin_indices([str(p)])
     assert rep["past_line"] == [] and rep["switchable"] == 6000
     data = p.read_bytes()
@@ -379,8 +379,9 @@ def test_wide_skins_put_switchable_geosets_below_the_16_bit_line(tmp_path):
     idx = struct.unpack_from(f"<{n_t}H", data, t_off)
     subs = [struct.unpack_from("<HHHHHH", data, s_off + i * 48) for i in range(4)]
     starts = {sid: (level << 16) | start for sid, level, _vs, _vc, start, _c in subs}
-    assert starts[1703] == 0 and starts[1502] == 3000                 # switchable first, in order
-    assert starts[0] == 6000 and starts[2202] == 66000                # then the body, then undrawn
+    # the body stays at the start (past the line the client stopped drawing a Kul Tiran's face),
+    # the switchable geosets follow, the undrawn submesh goes last
+    assert starts[0] == 0 and starts[1703] == 60000 and starts[1502] == 63000 and starts[2202] == 66000
     for i, (sid, level, _vs, vc, start, count) in enumerate(subs):    # each draws what it drew
         f = (level << 16) | start
         assert set(idx[f:f + count]) == {i + 1} and vc == 64
@@ -395,7 +396,7 @@ def test_wide_skins_put_switchable_geosets_below_the_16_bit_line(tmp_path):
     n_t, t_off = struct.unpack_from("<II", data, 0x0C)
     idx = struct.unpack_from(f"<{n_t}H", data, t_off)
     assert rep["reordered"] and rep["past_line"] == [] and n_t == 66000
-    assert idx[:4000] == (2,) * 4000 and idx[4000:64000] == (1,) * 60000 and idx[64000:] == (99,) * 2000
+    assert idx[:60000] == (1,) * 60000 and idx[60000:64000] == (2,) * 4000 and idx[64000:] == (99,) * 2000
 
 
 def test_every_facial_style_gets_a_facial_hair_texture_row():

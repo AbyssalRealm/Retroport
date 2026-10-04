@@ -29,9 +29,14 @@ through this detour), and rebuilding the draw list after a change.
 Only skins with more than 65,535 indices are affected: on any other skin `level` keeps its legacy
 meaning (an LOD/sub-batch marker) and nothing changes.
 
-`retroport race` also orders a character's skin so its switchable geosets come first (below the
-line) when they fit: the Kul Tiran male then needs no extension, the female (85,947 switchable
-indices) still does.
+`retroport race` lays a character's skin out body first, then switchable geosets, so as many as
+fit sit below the line; the body has to stay first (moved past the line, a Kul Tiran's face stopped
+drawing). Both Kul Tirans still have switchable geosets past it (the male's eye glows and belts, most
+of the female's), so both need this extension.
+
+WarcraftXL fills a detour's `original` in only when it enables the hook chain, after `WXL_Load`
+returns: the success test is `HookAttach`'s result (checking `original` there made the extension
+report "declined to initialise" while its hook went live anyway).
 
 ## Build
 

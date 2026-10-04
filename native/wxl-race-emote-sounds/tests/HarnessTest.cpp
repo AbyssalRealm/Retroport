@@ -89,12 +89,23 @@ namespace
         va_end(ap);
     }
 
+    // like WarcraftXL: HookAttach only registers the detour; the chain's "original" pointers are
+    // filled in later, when the core enables the hooks (EnableHooks below)
+    void** g_slotId = nullptr;
+    void** g_slotIndex = nullptr;
+
     int __cdecl HookAttach(const char* name, uintptr_t target, void* detour, void** original, int)
     {
         std::printf("hook %s at 0x%08X\n", name, static_cast<unsigned>(target));
-        if (target == 0x004CEB30) { g_detourId = detour; *original = reinterpret_cast<void*>(&NativeSoundId); return 1; }
-        if (target == 0x004CEB70) { g_detourIndex = detour; *original = reinterpret_cast<void*>(&NativeSoundIndex); return 1; }
+        if (target == 0x004CEB30) { g_detourId = detour; g_slotId = original; return 1; }
+        if (target == 0x004CEB70) { g_detourIndex = detour; g_slotIndex = original; return 1; }
         return 0;
+    }
+
+    void EnableHooks()
+    {
+        if (g_slotId) *g_slotId = reinterpret_cast<void*>(&NativeSoundId);
+        if (g_slotIndex) *g_slotIndex = reinterpret_cast<void*>(&NativeSoundIndex);
     }
 
     void Expect(const char* what, long long got, long long want)
@@ -152,8 +163,9 @@ int main(int argc, char** argv)
     api.apiVersion = WXL_API_VERSION;
     api.Log = &Log;
     api.HookAttach = &HookAttach;
-    Expect("WXL_Load succeeds", load(&api), 1);
+    Expect("WXL_Load succeeds before the chain is enabled", load(&api), 1);
     if (!g_detourId || !g_detourIndex) { std::printf("detours not attached\n"); return 1; }
+    EnableHooks();
 
     auto id = reinterpret_cast<uint32_t(__cdecl*)(uint32_t, uint32_t, uint32_t)>(g_detourId);
     auto index = reinterpret_cast<int32_t(__cdecl*)(uint32_t, uint32_t, uint32_t)>(g_detourIndex);

@@ -197,14 +197,15 @@ SKIN_U16 = 0xFFFF
 
 
 def order_skin_indices(skin_paths: list[str]) -> list[dict]:
-    """Lay each skin's index buffer out switchable geosets first, the always-drawn body (id 0)
-    next and undrawn submeshes (no batch) last, so as much switchable geometry as fits starts
-    below index 65,536. A skin with more indices keeps the high 16 bits of a submesh's start in
-    its ``level``, and 3.3.5 matches geosets on ``(level << 16) | id``: a switchable submesh past
-    the line can never be hidden (wxl-wide-skin-geosets fixes the client; this keeps clients
-    without it right as far as the geometry allows). Returns per skin {indices, switchable,
-    past_line: switchable geoset ids that still start past it}; a skin whose submeshes share or
-    skip index ranges is left alone."""
+    """Lay each skin's index buffer out as: the always-drawn body (geoset 0), then the switchable
+    geosets, then undrawn submeshes (no batch). A skin with more than 65,535 indices keeps the high
+    16 bits of a submesh's start in its ``level``, and 3.3.5 matches geosets on
+    ``(level << 16) | id``: a switchable submesh past the line can never be hidden
+    (wxl-wide-skin-geosets fixes that in the client), so as much switchable geometry as fits goes
+    below it - after the body, which must stay at the start: with it past the line (switchable
+    first) a Kul Tiran's face stopped drawing in the client (sixth client test). Returns per skin
+    {indices, reordered, switchable, past_line: switchable geoset ids that start past it}; a skin
+    whose submeshes share or skip index ranges is left alone."""
     reports = []
     for sp in skin_paths:
         with open(sp, "rb") as fh:
@@ -227,7 +228,7 @@ def order_skin_indices(skin_paths: list[str]) -> list[dict]:
             and all(a[1] == b[0] for a, b in zip(spans, spans[1:]))
         if n_t > SKIN_U16 and contiguous:
             indices = struct.unpack_from(f"<{n_t}H", data, t_off)
-            order = sorted(subs, key=lambda s: (0 if s[1] and s[0] in drawn else 1 if s[0] in drawn else 2, s[0]))
+            order = sorted(subs, key=lambda s: (2 if s[0] not in drawn else 1 if s[1] else 0, s[0]))
             out, starts = [], {}
             for i, _sid, first, count in order:
                 starts[i] = len(out)
