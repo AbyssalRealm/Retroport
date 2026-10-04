@@ -28,9 +28,9 @@
 //
 // What: both functions are detoured. Races below 22 go straight to the client. For races 22+ the
 // sound comes from the EmotesTextSound rows the client already loaded (g_emotesTextSoundDB), and
-// the variant is picked by the client's own code through a native race that uses the same sound -
-// a race cloned from Human voices, for example - so nothing of the client's sound logic is
-// reimplemented. A sound no native race shares is sent with variant 0.
+// the variant is the one the client's own chooser picks for that sound - the same two calls the
+// native GetTextEmoteSoundIndex ends with (sound kit by id, then pick a file: weighted, never the
+// last one twice), so a race with its own voice gets every recording, like any native race.
 
 #define WXL_EXTENSION
 #include <wxl/PluginApi.h>
@@ -46,6 +46,9 @@ namespace
     constexpr uintptr_t kGetTextEmoteSoundIndex = 0x004CEB70; // int32  __cdecl (emote, race, sex)
     constexpr uintptr_t kEmotesTextSoundCount   = 0x00AD37B4; // g_emotesTextSoundDB + 0x08: record count
     constexpr uintptr_t kEmotesTextSoundRecords = 0x00AD37C8; // g_emotesTextSoundDB + 0x1C: record array
+    constexpr uintptr_t kSoundKitById           = 0x004CC180; // void* __cdecl (soundEntriesId), null if none
+    constexpr uintptr_t kChooseSoundFile        = 0x004CBAC0; // const char* __thiscall (kit, mode, int* index, forced, 5)
+    constexpr size_t    kSoundKitFileCount      = 0x40;       // int32 in the kit: how many files it has
     constexpr uint32_t  kNativeRaceLimit        = 22;         // the client's table holds races 0-21
 
     /// One EmotesTextSound.dbc row as the client keeps it in memory (5 x uint32, stride 0x14).
@@ -61,6 +64,9 @@ namespace
 
     using SoundIdFn    = uint32_t(__cdecl*)(uint32_t emote, uint32_t race, uint32_t sex);
     using SoundIndexFn = int32_t(__cdecl*)(uint32_t emote, uint32_t race, uint32_t sex);
+    using SoundKitByIdFn = void*(__cdecl*)(uint32_t soundId);
+    using ChooseSoundFileFn = const char*(__thiscall*)(void* kit, int32_t mode, int32_t* index, int32_t forced,
+                                                       int32_t unknown);
 
     const WXL_Api* g_api = nullptr;
     SoundIdFn      g_nextSoundId = nullptr;    // next link of the detour chain (ends at the client)
@@ -116,13 +122,14 @@ namespace
     {
         if (race < kNativeRaceLimit) return g_nextSoundIndex(emote, race, sex);
         const uint32_t sound = sex < 2 ? Lookup(emote, race, sex) : 0u;
-        if (sound == 0) return -1;                       // the client's own "no sound" answer
-        // The variant is the client's choice for that sound: ask it through a native race that
-        // makes the same sound for this emote and sex.
-        for (uint32_t standIn = 1; standIn < kNativeRaceLimit; ++standIn)
-            if (g_nextSoundId(emote, standIn, sex) == sound)
-                return g_nextSoundIndex(emote, standIn, sex);
-        return 0;
+        // what the native function does once it has the sound: no kit, or a kit without files,
+        // is "no sound" (-1); otherwise the chooser picks the file (mode 2, nothing forced)
+        void* kit = sound ? reinterpret_cast<SoundKitByIdFn>(kSoundKitById)(sound) : nullptr;
+        if (!kit || *reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(kit) + kSoundKitFileCount) == 0)
+            return -1;
+        int32_t variant = 0;
+        reinterpret_cast<ChooseSoundFileFn>(kChooseSoundFile)(kit, 2, &variant, -1, 5);
+        return variant;
     }
 }
 
@@ -131,7 +138,7 @@ extern "C"
     __declspec(dllexport) const WXL_PluginInfo* __cdecl WXL_Query(void)
     {
         static const WXL_PluginInfo info = {
-            sizeof(WXL_PluginInfo), WXL_API_VERSION, kTag, 1, WXL_CLIENT_BUILD,
+            sizeof(WXL_PluginInfo), WXL_API_VERSION, kTag, 2, WXL_CLIENT_BUILD,
         };
         return &info;
     }

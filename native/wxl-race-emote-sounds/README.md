@@ -21,10 +21,16 @@ other `cmp reg, 16h` checks found no other race-limited lookup (vocal error soun
 
 Detours both functions. Races below 22 go straight to the client. For races 22+ the sound comes
 from the `EmotesTextSound` rows the client already loaded (`g_emotesTextSoundDB`), and the variant
-is chosen by the client's own code through a native race with the same sound (a race whose voices
-were cloned from Human uses Human's). A sound no native race shares is sent as variant 0.
+(which of the sound's files plays, sent along so every client plays the same one) is picked the
+way the native function picks it, by the client's own code:
 
-The race data itself (the `EmotesTextSound` rows for the new race) comes from `retroport race`.
+| Function | Address | |
+|---|---|---|
+| sound kit by `SoundEntries` id | `0x004CC180` | `__cdecl`, null when there is none; file count at kit + `0x40` |
+| choose a file of a kit | `0x004CBAC0` | `__thiscall (kit, 2, &index, -1, 5)`: weighted, never the last one twice |
+
+The race data itself (the `EmotesTextSound` rows and the race's own `SoundEntries`, ported from
+BfA) comes from `retroport race`.
 
 ## Build
 
@@ -36,8 +42,10 @@ cmake --build build --config Release
 build\Release\wxl-race-emote-sounds-test.exe build\Release\wxl-race-emote-sounds.dll
 ```
 
-The test loads the real DLL in a 32-bit process, maps fake client memory at the addresses it reads
-and drives its detours through a fake WarcraftXL API.
+The test loads the real DLL in a 32-bit process and drives its detours through a fake WarcraftXL
+API. The fake client data and code sit at the real addresses inside the test's own image (a large
+uninitialised section at the default exe base): Windows maps its locale tables around
+`0x004C0000` before `main` runs, so that range can't be allocated at run time.
 
 ## Install
 

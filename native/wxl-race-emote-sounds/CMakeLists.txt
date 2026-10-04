@@ -24,6 +24,7 @@ target_compile_options(wxl-race-emote-sounds PRIVATE /W4 /permissive- /utf-8)
 add_executable(wxl-race-emote-sounds-test tests/HarnessTest.cpp)
 target_include_directories(wxl-race-emote-sounds-test PRIVATE "${WXL_CORE_DIR}/include")
 target_compile_features(wxl-race-emote-sounds-test PRIVATE cxx_std_17)
-# keep the test image away from the client addresses it maps (0x00AD0000)
-target_link_options(wxl-race-emote-sounds-test PRIVATE /BASE:0x20000000 /DYNAMICBASE:NO /FIXED:NO)
+# the test image itself spans the client addresses the module uses (see HarnessTest.cpp): the
+# default exe base, no relocation, and its .client section writable and executable
+target_link_options(wxl-race-emote-sounds-test PRIVATE /BASE:0x00400000 /DYNAMICBASE:NO /FIXED /SECTION:.client,ERW)
 add_dependencies(wxl-race-emote-sounds-test wxl-race-emote-sounds)
