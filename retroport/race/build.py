@@ -25,6 +25,7 @@ from typing import Callable
 from pydantic import BaseModel
 
 from ..character.convert import (BfaInstall, CharacterResult, _find_listfile_paths, _find_race, append_customization,
+                                 charsections_layout_problems,
                                  convert_character)
 from ..dbc import DBCError, DBCFile, RawDBC, load_dbc
 from ..formats import blp
@@ -205,6 +206,10 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
     log(f"Client: adding races {[s.race_id for s in specs]} (displays {ids[2]}/{ids[3]})")
     res.rows["client"] = _apply(ctables, specs, name=name, cfs=cfs, look=look_template, ids=ids,
                                 characters=characters, barber=barber)
+    layout = charsections_layout_problems(ctables["CharSections"], {s.race_id for s in specs})
+    if layout:
+        raise DBCError("CharSections rows for the new race are not laid out the way the client's "
+                       f"customization cache requires (it would corrupt memory): {layout[:3]}")
     dbc_out = os.path.join(client_out, "DBFilesClient")
     os.makedirs(dbc_out, exist_ok=True)
     for t, d in ctables.items():

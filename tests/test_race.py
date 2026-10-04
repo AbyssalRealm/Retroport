@@ -237,3 +237,34 @@ def test_lettered_patches_rank_above_lettered_locale_patches(tmp_path, monkeypat
     order = [label for label, _src in mpq.ClientData(str(tmp_path)).sources]
     assert order == [r"Data\patch-H.MPQ (folder)", "patch-E.MPQ", "patch-4.MPQ",
                      r"enUS\patch-enUS-x.MPQ", r"enUS\locale-enUS.MPQ"]
+
+
+# --------------------------------------------------------------------------- second client test
+
+def test_unmanaged_groups_keep_the_piece_stitched_to_the_body():
+    from retroport.character.convert import unmanaged_geoset_remap
+    # belt: no 1801; the waist 1802 is stitched, the bulky 1803 floats -> keep 1802 only
+    assert unmanaged_geoset_remap({0, 1802, 1803}, {1802}) == {1802: 0, 1803: None}
+    # feet: the default 2001 is stitched -> keep it, hide the alternative
+    assert unmanaged_geoset_remap({0, 2001, 2002}, {2001, 2002}) == {2001: 0, 2002: None}
+    # nothing stitched and no default -> hide all
+    assert unmanaged_geoset_remap({0, 1902, 1903}, set()) == {1902: None, 1903: None}
+
+
+def test_customization_rows_are_written_as_contiguous_sections():
+    from retroport.character.convert import append_customization, charsections_layout_problems
+    cs, hg, fh = DBCFile(10), DBCFile(6), DBCFile(8)
+    cs.add_record([1, 1, 0, 0, 0, 0, 0, 1, 0, 0])
+    interleaved = [{"section": s, "variation": v, "color": c, "flags": 1, "textures": ["", "", ""]}
+                   for c in range(2) for v in range(2) for s in (0, 1, 3)]       # BfA's id order
+    append_customization(cs, hg, fh, 22, 0, interleaved,
+                         [{"VariationID": 1, "GeosetID": 2, "Showscalp": 0}, {"VariationID": 0, "GeosetID": 0, "Showscalp": 1}],
+                         [])
+    assert charsections_layout_problems(cs) == []
+    rows = [(r[3], r[8], r[9]) for r in cs.records if r[1] == 22]
+    assert rows == sorted(rows)
+    assert [r[3] for r in hg.records] == [0, 1]                                    # by VariationID
+    broken = DBCFile(10)
+    for sec in (0, 1, 0):
+        broken.add_record([len(broken.records) + 1, 22, 0, sec, 0, 0, 0, 1, 0, 0])
+    assert len(charsections_layout_problems(broken)) == 1

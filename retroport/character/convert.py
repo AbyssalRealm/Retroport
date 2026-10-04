@@ -56,21 +56,65 @@ CHARSECTIONS_FIELDS, HAIR_FIELDS, FACIAL_FIELDS = 10, 6, 8
 # CharacterFacialHairStyles.Geoset[i] drives geoset group FACIAL_SLOT_GROUPS[i] (from 3.3.5's own
 # rows: Human female piercings are slot 1 -> 3xx, Blood Elf eyes are slot 4 -> 17xx).
 FACIAL_SLOT_GROUPS = (1, 3, 2, 16, 17)
-MANAGED_GEOSET_GROUPS = 19          # 3.3.5 switches groups 0-18 and draws every variant of the rest
+# 3.3.5 switches geoset groups 0-17 and draws EVERY variant of the rest: a Kul Tiran's floating
+# bulky belt (1803) showed with a skin texture next to its stitched waist (1802).
+MANAGED_GEOSET_GROUPS = 18
 
 
-def unmanaged_geoset_remap(geosets: set[int]) -> dict[int, int | None]:
-    """Groups 3.3.5 never switches (BfA's 20 feet, 22 torso, ...) would draw every variant at
-    once. Keep each group's default variant (xx01, else its lowest) as always-on body (0)."""
+def unmanaged_geoset_remap(geosets: set[int], stitched: set[int] | None = None) -> dict[int, int | None]:
+    """Groups 3.3.5 never switches (BfA's 18 belt, 20 feet, 22 torso, ...) would draw every variant
+    at once. Keep one variant per group as always-on body (0): the default (xx01) when it is part of
+    the body surface, else the first variant stitched to the body (sharing vertices with geoset 0,
+    e.g. the waist 1802 - a hole without it), else none. Floating overlays (a bulky belt) are hidden.
+    ``stitched`` None means "unknown": then xx01 (or the lowest) is kept."""
     groups: dict[int, list[int]] = {}
     for g in geosets:
         if g // 100 >= MANAGED_GEOSET_GROUPS:
             groups.setdefault(g // 100, []).append(g)
     out: dict[int, int | None] = {}
     for grp, ids in groups.items():
-        keep = grp * 100 + 1 if grp * 100 + 1 in ids else min(ids)
+        ids.sort()
+        default = grp * 100 + 1
+        if stitched is None:
+            keep = default if default in ids else ids[0]
+        elif default in ids and default in stitched:
+            keep = default
+        else:
+            keep = next((i for i in ids if i in stitched), None)
         out.update({i: (0 if i == keep else None) for i in ids})
     return out
+
+
+def stitched_geosets(m2_path: str, skin_path: str, candidates: set[int]) -> set[int]:
+    """Candidates whose surface shares vertex positions with the default body: geoset 0 plus each
+    switched group's default piece (401 hands, 501 lower legs, 1301 legs, ...) - bare feet attach
+    to the lower legs, not to the torso."""
+    with open(m2_path, "rb") as fh:
+        m2 = fh.read()
+    with open(skin_path, "rb") as fh:
+        skin = fh.read()
+    n_v, v_off = struct.unpack_from("<II", m2, 0x3C)
+    n_l, l_off = struct.unpack_from("<II", skin, 0x04)
+    n_t, t_off = struct.unpack_from("<II", skin, 0x0C)
+    n_s, s_off = struct.unpack_from("<II", skin, 0x1C)
+    lookup = struct.unpack_from(f"<{n_l}H", skin, l_off)
+    tris = struct.unpack_from(f"<{n_t}H", skin, t_off)
+    points: dict[int, set] = {}
+    for i in range(n_s):
+        sid, level, _vs, _vc, start, count = struct.unpack_from("<HHHHHH", skin, s_off + i * 48)
+        base_piece = sid == 0 or (sid // 100 < MANAGED_GEOSET_GROUPS and sid % 100 == 1)
+        if not base_piece and sid not in candidates:
+            continue
+        sid = 0 if base_piece else sid
+        first = (level << 16) | start
+        pts = points.setdefault(sid, set())
+        for k in range(first, min(first + count, n_t)):
+            v = lookup[tris[k]]
+            if v < n_v:
+                x, y, z = struct.unpack_from("<3f", m2, v_off + v * 48)
+                pts.add((round(x, 4), round(y, 4), round(z, 4)))
+    body = points.get(0, set())
+    return {g for g in candidates if points.get(g, set()) & body}
 
 
 def facial_styles(facial: list[dict], extras: list[dict], eyes_geoset: int | None) -> list[dict]:
@@ -234,7 +278,9 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
     stripped = fixup.strip_unfilled_texture_layers(er.output, skins)
     if stripped:
         log(f"  cloak: dropped the empty emblem layer from {stripped} batch(es) (3.3.5 has no guild-emblem texture)")
-    remap = unmanaged_geoset_remap(set(analyze_skin(skins[0]).geosets)) if skins else {}
+    all_geosets = set(analyze_skin(skins[0]).geosets) if skins else set()
+    unmanaged = {g for g in all_geosets if g // 100 >= MANAGED_GEOSET_GROUPS}
+    remap = unmanaged_geoset_remap(all_geosets, stitched_geosets(er.output, skins[0], unmanaged)) if unmanaged else {}
     if remap:
         fixup.remap_geosets(skins, remap)
         log("  geosets 3.3.5 does not switch: " + ", ".join(f"{g}->{'body' if v == 0 else 'hidden'}"
@@ -430,12 +476,42 @@ def _write_dbcs(dbc_dir: str, out_dir: str, race_id: int, sex_id: int, rows: lis
     return counts
 
 
+def charsections_layout_problems(cs: DBCFile, races: set[int] | None = None) -> list[str]:
+    """Rows that break the layout the client's customization cache needs (decoded from Wow.exe's
+    builder): each (race, sex, section) must be ONE contiguous run, or the builder writes past an
+    array it sized from a later run. Blizzard's tables always satisfy this (their variation and
+    colour order inside a run varies, and the client tolerates that). ``races`` limits the check."""
+    problems: list[str] = []
+    seen: set = set()
+    last = None
+    for i, r in enumerate(cs.records):
+        section = (r[1], r[2], r[3])
+        if races is not None and r[1] not in races:
+            last = None
+            continue
+        if section != last:
+            if section in seen:
+                problems.append(f"row {i}: race {section[0]} sex {section[1]} section {section[2]} "
+                                "appears in more than one run")
+            seen.add(section)
+        last = section
+    return problems
+
+
 def append_customization(cs: DBCFile, hg: DBCFile, fh: DBCFile, race_id: int, sex_id: int,
                          sections: list[dict], hair: list[dict], facial: list[dict]) -> dict[str, int]:
     """Append one race/sex's CharSections, CharHairGeosets and CharacterFacialHairStyles rows."""
     if any(r[1] == race_id and r[2] == sex_id for r in cs.records):
         raise DBCError(f"CharSections already has rows for race {race_id} sex {sex_id}; "
                        "use another --race-id or start from a template without them")
+    # The client builds its customization cache in one pass that requires every (race, sex,
+    # section) to be ONE contiguous run sorted by variation then colour: it sizes a section's
+    # variation array from the run it just saw and later writes into it without a bounds check.
+    # BfA's row order interleaves sections, which corrupted the heap (crash on exit in
+    # CCharacterComponent::Destroy). Blizzard's own tables are ordered this way.
+    sections = sorted(sections, key=lambda r: (r["section"], r["variation"], r["color"]))
+    hair = sorted(hair, key=lambda r: r["VariationID"])
+    facial = sorted(facial, key=lambda r: r["VariationID"])
     next_id = cs.max_id() + 1
     for r in sections:
         cs.add_record([next_id, race_id, sex_id, r["section"], *(cs.add_string(t) for t in r["textures"]),
