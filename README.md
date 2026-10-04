@@ -310,6 +310,14 @@ edges meet the body's: Kul Tiran 2001 feet, 2201 torso) and hides the others. Th
 (18) is the client's, as in BfA: a belt whose display has `GeosetGroup[0]` 1 shows the Kul
 Tiran band (1802), 2 the sash (1803), 0 (most belts) only its texture.
 
+**Helmets** - the race wears the look template's helmet models (`ClientPrefix`, `Hu`), which
+hang from attachment 11 as placed on that race's head: Human's sits at the top of the skull.
+BfA's Kul Tiran keeps its attachment on the head bone's pivot (the neck joint, 0.2 lower,
+since BfA gives Kul Tirans their own helmets), so Human helmets sank into the chest. `race`
+moves attachment 11 to the template's spot relative to the new race's skull (`race/helm.py`;
+the skull is the body mesh skinned to the head, hair left out). Human helmets are a little
+small for a Kul Tiran head; race-specific helmets would mean converting BfA's ~900 per sex.
+
 **Cloaks** - BfA characters draw one cloak variant (geoset 1507) as cape texture + guild
 emblem layer (texture types 16-18, which 3.3.5 lacks); the converter drops that empty second
 layer, leaving the cape texture (the same repair as the released Mag'har port). The other
