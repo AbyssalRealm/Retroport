@@ -243,8 +243,9 @@ ChrRaces, so "either faction" means two race ids. Race ids must be 1-32: client 
 AzerothCore race masks are 32-bit (a race 53 would silently share race 21's bit).
 
 The client is only read. Every DBC is built on the copy the client actually loads, found
-in the archive order WarcraftXL mounts (`patch*.MPQ` folders first, then lettered/numbered
-patches, locale first on a tie, then the stock chain); `INSTALL.txt` lists each source.
+in the order the client reads archives (`patch*.MPQ` folders first, then lettered/numbered
+patches, then lettered/numbered locale patches, then the stock chain); `INSTALL.txt` lists
+each source.
 
 - **ChrRaces** - copies the faction template (`--alliance-template 1` Human,
   `--horde-template 2` Orc: faction, language, intro); name, `ClientFileString` = the BfA
@@ -255,7 +256,17 @@ patches, locale first on a tie, then the stock chain); `INSTALL.txt` lists each 
   the template's outfits.
 - **SkillRaceClassInfo, SkillLineAbility, Faction** - wherever a race mask includes the
   template, the new race is added (languages, racials, weapon skills, reputations).
-- **EmotesTextSound, VocalUISounds, NameGen** - voices and random names from the look template.
+- **Voice** - the race's own sounds from BfA (`race/sounds.py`): each BfA sound kit becomes a
+  `SoundEntries` row with its `.ogg` files, as they are (the 3.3.5 client's FMOD plays Ogg
+  Vorbis; BfA's volumes and distances are on 3.3.5's scale - Human's are identical in both).
+  **EmotesTextSound** gets the race's emote sounds (emotes 3.3.5 lacks, like /forthealliance,
+  are skipped), **VocalUISounds** its spoken errors ("My inventory is full"; the enums match),
+  and a new **CreatureSoundData** row per sex its attack, wound and death sounds, set on the
+  new models (a 3.3.5 player's come from `CreatureModelData.SoundID`). Without BfA data the
+  look template's voice is cloned instead. Race ids 22+ also need the client extension
+  [`native/wxl-race-emote-sounds`](native/wxl-race-emote-sounds): the client plays emote
+  sounds for races 0-21 only.
+- **NameGen** - random names from the look template.
 - **BarberShopStyle** - the race's hair-style and facial-hair rows from BfA's own table (real
   names, e.g. "Swabbed", "Clydesdale"), limited to the converted variations; the same ids on
   client and server (the server validates a barber request by row id, race and sex).
@@ -264,7 +275,8 @@ patches, locale first on a tie, then the stock chain); `INSTALL.txt` lists each 
   runtime (rows tighten for a 6th race per side); the race icons from BfA's atlas spliced
   into `UI-CharacterCreate-Races.blp` (existing icons stay byte-identical); BfA's race
   description; the template's racial text per faction; the look template's create/select
-  scene. Patches sit in tagged `-- [retroport]` blocks.
+  scene and its music (character select plays it by the race's own name). Patches sit in
+  tagged `-- [retroport]` blocks.
 - **Server** - the same DBC edits on the server's own DBCs, and `<Race>_race.sql`
   (+ `_undo.sql`): `playercreateinfo` (+ action, item), `player_race_stats`, and the new
   race's bit wherever the template's is set in skills, spells, quests, items, `spell_area`,
@@ -290,6 +302,12 @@ and texture files replace only copies in the race's own folder; a different file
 else is a `conflict`. Replaced files (and, with `--clean`, leftovers in the race folder the
 package doesn't contain) go to `<package>\backups\<time>\` first; `uninstall` restores them
 and refuses if you edited an installed file afterwards.
+
+**Geosets 3.3.5 doesn't switch** - 3.3.5 switches groups 0-17 and draws every variant of the
+rest. Per group the converter keeps the piece that fills a hole in the default body (its open
+edges meet the body's: Kul Tiran 2001 feet, 2201 torso) and hides the others; a group none of
+whose pieces does is hidden whole - the Kul Tiran belt band (1802) and sash (1803) lie on a
+closed body and belong only under belts that call for them, so belts show as texture.
 
 **Cloaks** - BfA characters draw one cloak variant (geoset 1507) as cape texture + guild
 emblem layer (texture types 16-18, which 3.3.5 lacks); the converter drops that empty second

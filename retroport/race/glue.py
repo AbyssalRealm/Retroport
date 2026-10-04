@@ -11,7 +11,8 @@ replaces blocks with the same tag instead of adding another copy.
   text (``ABILITY_INFO_<RACE>_<FACTION><n>``) for races that exist on both sides.
 * CharacterCreate.xml - ``CharacterCreateRaceButton<n>`` up to ``MAX_RACES`` (the
   client indexes them directly; a missing one is a crash).
-* GlueParent.lua - races without their own create/select scene borrow another's.
+* GlueParent.lua - races without their own create/select scene borrow another's (and its
+  music: character select plays ``GlueAmbienceTracks[<the race's own name>]``).
 * GlueStrings.lua - description, ability and "disabled" strings.
 """
 
