@@ -307,6 +307,14 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
         fixup.remap_geosets(skins, remap)
         log("  geosets 3.3.5 does not switch: " + ", ".join(f"{g}->{'body' if v == 0 else 'hidden'}"
                                                             for g, v in sorted(remap.items())))
+    for rep in fixup.order_skin_indices(skins):
+        if rep["indices"] > fixup.SKIN_U16:
+            log(f"  {rep['skin']}: {rep['indices']} indices, switchable geosets ({rep['switchable']}) laid out first")
+        if rep["past_line"] and rep["skin"].endswith("00.skin"):
+            res.warnings.append(
+                f"{rep['skin']}: switchable geosets {rep['past_line']} start past index 65,535, where the stock "
+                "client can never hide them (every cape, eye glow, belt and robe piece at once) - install "
+                "the WarcraftXL extension wxl-wide-skin-geosets (retroport-tool\\native)")
     res.files += _extract_fixed_textures(er.output, out_dir, bfa, listfile, work, log)
 
     if not identity:
@@ -520,6 +528,24 @@ def charsections_layout_problems(cs: DBCFile, races: set[int] | None = None) -> 
     return problems
 
 
+def facial_feature_sections(sections: list[dict], facial: list[dict]) -> list[dict]:
+    """``sections`` plus facial-hair texture rows (section 2) for every facial style that has none.
+
+    3.3.5 counts a race's "features" from its section-2 rows whenever it has any
+    (CCharacterComponent::GetNumFacialFeaturesForHairColor, 0x4E7DF0), and from its
+    CharacterFacialHairStyles rows only when it has none. BfA's Kul Tiran female has one section-2
+    variation (her eyebrow texture) and 7 piercing styles, so only the first could be picked; each
+    missing style gets the first variation's textures, colour by colour."""
+    face_hair = [r for r in sections if r["section"] == 2]
+    have = {r["variation"] for r in face_hair}
+    if not face_hair:
+        return list(sections)
+    base = min(have)
+    added = [dict(r, variation=v) for v in sorted({f["VariationID"] for f in facial} - have)
+             for r in face_hair if r["variation"] == base]
+    return list(sections) + added
+
+
 def append_customization(cs: DBCFile, hg: DBCFile, fh: DBCFile, race_id: int, sex_id: int,
                          sections: list[dict], hair: list[dict], facial: list[dict]) -> dict[str, int]:
     """Append one race/sex's CharSections, CharHairGeosets and CharacterFacialHairStyles rows."""
@@ -531,7 +557,8 @@ def append_customization(cs: DBCFile, hg: DBCFile, fh: DBCFile, race_id: int, se
     # variation array from the run it just saw and later writes into it without a bounds check.
     # BfA's row order interleaves sections, which corrupted the heap (crash on exit in
     # CCharacterComponent::Destroy). Blizzard's own tables are ordered this way.
-    sections = sorted(sections, key=lambda r: (r["section"], r["variation"], r["color"]))
+    sections = sorted(facial_feature_sections(sections, facial),
+                      key=lambda r: (r["section"], r["variation"], r["color"]))
     hair = sorted(hair, key=lambda r: r["VariationID"])
     facial = sorted(facial, key=lambda r: r["VariationID"])
     next_id = cs.max_id() + 1

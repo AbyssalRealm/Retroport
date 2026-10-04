@@ -193,6 +193,55 @@ def remap_geosets(skin_paths: list[str], mapping: dict[int, int | None]) -> dict
     return report
 
 
+SKIN_U16 = 0xFFFF
+
+
+def order_skin_indices(skin_paths: list[str]) -> list[dict]:
+    """Lay each skin's index buffer out switchable geosets first, the always-drawn body (id 0)
+    next and undrawn submeshes (no batch) last, so as much switchable geometry as fits starts
+    below index 65,536. A skin with more indices keeps the high 16 bits of a submesh's start in
+    its ``level``, and 3.3.5 matches geosets on ``(level << 16) | id``: a switchable submesh past
+    the line can never be hidden (wxl-wide-skin-geosets fixes the client; this keeps clients
+    without it right as far as the geometry allows). Returns per skin {indices, switchable,
+    past_line: switchable geoset ids that still start past it}; a skin whose submeshes share or
+    skip index ranges is left alone."""
+    reports = []
+    for sp in skin_paths:
+        with open(sp, "rb") as fh:
+            data = bytearray(fh.read())
+        before = bytes(data)
+        n_t, t_off = S.read_m2array(data, S.SKIN_INDICES)
+        n_s, s_off = S.read_m2array(data, S.SKIN_SUBMESHES)
+        b_cnt, b_off = S.read_m2array(data, S.SKIN_BATCHES)
+        drawn = {struct.unpack_from("<H", data, b_off + i * S.M2BATCH + 0x04)[0] for i in range(b_cnt)}
+        subs = []
+        for i in range(n_s):
+            sid, level, _vs, _vc, start, count = struct.unpack_from("<HHHHHH", data, s_off + i * 48)
+            subs.append((i, sid, (level << 16) | start, count))
+        report = {"skin": os.path.basename(sp), "indices": n_t,
+                  "switchable": sum(c for i, sid, _f, c in subs if sid and i in drawn), "past_line": []}
+        spans = sorted((f, f + c) for _i, _sid, f, c in subs if c)
+        contiguous = all(a[1] == b[0] for a, b in zip(spans, spans[1:])) and spans and spans[0][0] == 0 \
+            and spans[-1][1] == n_t
+        if n_t > SKIN_U16 and contiguous:
+            indices = struct.unpack_from(f"<{n_t}H", data, t_off)
+            order = sorted(subs, key=lambda s: (0 if s[1] and s[0] in drawn else 1 if s[0] in drawn else 2, s[0]))
+            out, starts = [], {}
+            for i, _sid, first, count in order:
+                starts[i] = len(out)
+                out.extend(indices[first:first + count])
+            struct.pack_into(f"<{n_t}H", data, t_off, *out)
+            for i, _sid, _first, _count in subs:
+                struct.pack_into("<H", data, s_off + i * 48 + 2, starts[i] >> 16)       # level
+                struct.pack_into("<H", data, s_off + i * 48 + 8, starts[i] & SKIN_U16)  # indexStart
+            subs = [(i, sid, starts[i], c) for i, sid, _f, c in subs]
+        report["past_line"] = sorted({sid for i, sid, f, c in subs if sid and i in drawn and f > SKIN_U16})
+        if bytes(data) != before:
+            _save_skin(sp, before, bytes(data))
+        reports.append(report)
+    return reports
+
+
 def repair_combiner_header(m2_path: str, original: bytes) -> list[str]:
     """Restore model data that MultiConverter overwrote with the combiner-combos header field.
 

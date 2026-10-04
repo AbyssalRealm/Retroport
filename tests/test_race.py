@@ -333,3 +333,69 @@ def test_customization_rows_are_written_as_contiguous_sections():
     for sec in (0, 1, 0):
         broken.add_record([len(broken.records) + 1, 22, 0, sec, 0, 0, 0, 1, 0, 0])
     assert len(charsections_layout_problems(broken)) == 1
+
+
+# --------------------------------------------------------------------------- fifth client test
+
+def _wide_skin(tmp_path, parts):
+    """A skin whose submeshes are ``parts`` = [(geoset id, index count, drawn)], laid out in order
+    (index values tag their submesh: i + 1), with the high start word in ``level`` like the converter."""
+    from retroport.formats import structs as S
+    skin = bytearray(0x30)
+    skin[0:4] = b"SKIN"
+    S.write_m2array(skin, S.SKIN_VERTICES, 64, len(skin))
+    skin += bytes(128)
+    total = sum(c for _g, c, _d in parts)
+    S.write_m2array(skin, S.SKIN_INDICES, total, len(skin))
+    for i, (_g, count, _d) in enumerate(parts):
+        skin += struct.pack(f"<{count}H", *([i + 1] * count))
+    S.write_m2array(skin, S.SKIN_SUBMESHES, len(parts), len(skin))
+    start = 0
+    for gid, count, _d in parts:
+        skin += struct.pack("<HHHHHH", gid, start >> 16, 0, 64, start & 0xFFFF, count) + bytes(36)
+        start += count
+    drawn = [i for i, (_g, _c, d) in enumerate(parts) if d]
+    S.write_m2array(skin, S.SKIN_BATCHES, len(drawn), len(skin))
+    for i in drawn:
+        rec = bytearray(24)
+        struct.pack_into("<H", rec, 4, i)
+        skin += rec
+    p = tmp_path / "w00.skin"
+    p.write_bytes(bytes(skin))
+    return p
+
+
+def test_wide_skins_put_switchable_geosets_below_the_16_bit_line(tmp_path):
+    from retroport.convert.fixup import order_skin_indices
+    # body first, an eye glow and a cape past index 65,535, an undrawn torso variant
+    p = _wide_skin(tmp_path, [(0, 60000, True), (1703, 3000, True), (2202, 9000, False), (1502, 3000, True)])
+    rep, = order_skin_indices([str(p)])
+    assert rep["past_line"] == [] and rep["switchable"] == 6000
+    data = p.read_bytes()
+    n_t, t_off = struct.unpack_from("<II", data, 0x0C)
+    _n, s_off = struct.unpack_from("<II", data, 0x1C)
+    idx = struct.unpack_from(f"<{n_t}H", data, t_off)
+    subs = [struct.unpack_from("<HHHHHH", data, s_off + i * 48) for i in range(4)]
+    starts = {sid: (level << 16) | start for sid, level, _vs, _vc, start, _c in subs}
+    assert starts[1703] == 0 and starts[1502] == 3000                 # switchable first, in order
+    assert starts[0] == 6000 and starts[2202] == 66000                # then the body, then undrawn
+    for i, (sid, level, _vs, vc, start, count) in enumerate(subs):    # each draws what it drew
+        f = (level << 16) | start
+        assert set(idx[f:f + count]) == {i + 1} and vc == 64
+    # too much switchable geometry: what still STARTS past the line is reported (a submesh that only
+    # ends past it is fine - the id the client matches on comes from its start)
+    p2 = _wide_skin(tmp_path, [(0, 1000, True), (2, 40000, True), (3, 30000, True), (4, 5000, True)])
+    assert order_skin_indices([str(p2)])[0]["past_line"] == [4]
+
+
+def test_every_facial_style_gets_a_facial_hair_texture_row():
+    from retroport.character.convert import facial_feature_sections
+    rows = [{"section": 2, "variation": 0, "color": c, "flags": 1, "textures": ["a", f"b{c}", ""]} for c in (0, 1)]
+    rows.append({"section": 3, "variation": 0, "color": 0, "flags": 1, "textures": ["h", "", ""]})
+    out = facial_feature_sections(rows, [{"VariationID": v} for v in range(3)])
+    added = sorted((r["variation"], r["color"], r["textures"][1]) for r in out if r["section"] == 2)
+    assert added == [(0, 0, "b0"), (0, 1, "b1"), (1, 0, "b0"), (1, 1, "b1"), (2, 0, "b0"), (2, 1, "b1")]
+    assert len(out) == 7
+    # a race with no section-2 rows keeps counting its CharacterFacialHairStyles rows
+    hair_only = [r for r in rows if r["section"] == 3]
+    assert facial_feature_sections(hair_only, [{"VariationID": v} for v in range(3)]) == hair_only
