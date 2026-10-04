@@ -56,22 +56,23 @@ CHARSECTIONS_FIELDS, HAIR_FIELDS, FACIAL_FIELDS = 10, 6, 8
 # CharacterFacialHairStyles.Geoset[i] drives geoset group FACIAL_SLOT_GROUPS[i] (from 3.3.5's own
 # rows: Human female piercings are slot 1 -> 3xx, Blood Elf eyes are slot 4 -> 17xx).
 FACIAL_SLOT_GROUPS = (1, 3, 2, 16, 17)
-# 3.3.5 switches geoset groups 0-17 and draws EVERY variant of the rest: a Kul Tiran's floating
-# bulky belt (1803) showed with a skin texture next to its stitched waist (1802).
-MANAGED_GEOSET_GROUPS = 18
+# 3.3.5 (CCharacterComponent::GeosRenderPrep, 0x4ED900) hides geosets 0-2000, then shows the one
+# value it keeps per group 0-18 - the belt group like BfA: 1801 + the waist item's
+# ItemDisplayInfo.GeosetGroup[0], so a Kul Tiran shows its band (1802) or sash (1803) only under
+# belts that ask for one. Group 19 never shows; ids above 2000 (BfA's 20 feet, 22 torso) are never
+# hidden, so every variant of those draws at once.
+MANAGED_GEOSET_GROUPS = 19
 # A piece fills a hole in the body when (nearly) all of its open edges meet open edges of the
 # body. A belt band welded to the body along one side (Kul Tiran 1802) meets half of them.
 HOLE_FILL_RATIO = 0.75
 
 
 def unmanaged_geoset_remap(geosets: set[int], fills: dict[int, float] | None = None) -> dict[int, int | None]:
-    """Groups 3.3.5 never switches (BfA's 18 belt, 20 feet, 22 torso, ...) would draw every variant
-    at once. Keep one variant per group as always-on body (0): the one that fills a hole in the
-    default body (``fills``, from hole_fill_ratios) - the default xx01 when several do (2001 feet
-    over the 2002 alternative) - and hide the rest. A group none of whose pieces fills a hole is
-    hidden whole: Kul Tiran belts (1802 band, 1803 sash) lie on a closed body and only belong
-    under belts that ask for them, which 3.3.5 cannot do. ``fills`` None means "unknown": then
-    xx01 (or the lowest) is kept."""
+    """Groups 3.3.5 never switches (BfA's 20 feet, 22 torso, ...) would draw every variant at once
+    (or, group 19, none). Keep one variant per group as always-on body (0): the one that fills a
+    hole in the default body (``fills``, from hole_fill_ratios) - the default xx01 when several do
+    (2001 feet over the 2002 alternative) - and hide the rest; a group none of whose pieces fills
+    a hole is hidden whole. ``fills`` None means "unknown": then xx01 (or the lowest) is kept."""
     groups: dict[int, list[int]] = {}
     for g in geosets:
         if g // 100 >= MANAGED_GEOSET_GROUPS:
@@ -93,7 +94,8 @@ def hole_fill_ratios(m2_path: str, skin_path: str, candidates: set[int]) -> dict
     """For each candidate piece, the share of its open edges that close an open edge of the default
     body: geoset 0 plus each switched group's default piece (401 hands, 501 lower legs, 1301 legs,
     ...). 1.0 is a piece that fills a hole exactly (Kul Tiran 2001 feet, 2201 torso); a piece
-    laid on the body meets few or none, and a closed one (a sash) has no open edges at all (0)."""
+    laid on the body meets few or none (a belt band, 0.5), and a closed one (a sash) has no open
+    edges at all (0)."""
     with open(m2_path, "rb") as fh:
         m2 = fh.read()
     with open(skin_path, "rb") as fh:

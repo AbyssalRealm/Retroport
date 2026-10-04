@@ -131,8 +131,11 @@ def has_alpha(img: Image.Image) -> bool:
 
 
 def mip_chain(img: Image.Image) -> list[Image.Image]:
+    """Every level down to 1x1, as Blizzard writes them (a 128x64 texture has 8). A non-square
+    texture cut short at the shorter side (1024x512 ending at 2x1) is rejected when the client
+    puts it on a model directly: Kul Tiran female hair (type 6) showed the green fallback."""
     mips = [img]
-    while min(mips[-1].size) > 1 and len(mips) < 16:
+    while max(mips[-1].size) > 1 and len(mips) < 16:
         w, h = mips[-1].size
         mips.append(img.resize((max(1, w // 2), max(1, h // 2)), Image.Resampling.LANCZOS))
     return mips
@@ -195,8 +198,9 @@ def header(data: bytes) -> dict:
             "has_mips": mips, "width": w, "height": h, "mips": levels}
 
 
-def verify_blp(path: str, size: tuple[int, int] | None = None) -> None:
-    """Header sane, every mip inside the file, and it decodes at the expected size."""
+def verify_blp(path: str, size: tuple[int, int] | None = None, *, full_chain: bool = True) -> None:
+    """Header sane, every mip inside the file, the mip chain down to 1x1 (``full_chain``; the
+    client rejects a model texture cut short), and it decodes at the expected size."""
     with open(path, "rb") as fh:
         data = fh.read()
     h = header(data)
@@ -205,6 +209,9 @@ def verify_blp(path: str, size: tuple[int, int] | None = None) -> None:
     for o, s in h["mips"]:
         if o + s > len(data):
             raise BLPError(f"{path}: mip data runs past end of file")
+    want = max(h["width"], h["height"]).bit_length()
+    if full_chain and h["has_mips"] and len(h["mips"]) < want:
+        raise BLPError(f"{path}: {len(h['mips'])} mip levels, a {h['width']}x{h['height']} texture needs {want}")
     img = decode(path)
     if size and img.size != tuple(size):
         raise BLPError(f"{path}: decodes as {img.size}, expected {tuple(size)}")

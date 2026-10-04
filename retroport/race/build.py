@@ -45,6 +45,7 @@ SERVER_TABLES = ["ChrRaces", "CharBaseInfo", "CharStartOutfit", "SkillRaceClassI
 RAW_TABLES = {"CharBaseInfo", "CharStartOutfit"}
 GLUE = "Interface\\GlueXML\\"
 ATLAS = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Races.blp"
+ROUND_ATLAS = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-RacesRound.blp"
 SEXES = ("Male", "Female")
 VOICE_DB2 = ("soundkit", "soundkitentry", "emotestext", "emotestextsound", "vocaluisounds", "creaturesounddata",
              "creaturedisplayinfo", "creaturemodeldata")
@@ -279,11 +280,15 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
             raise ValueError(f"no raceicon-{cfs.lower()}-male/female in the BfA atlas list")
         used = {(round(c[0] * atlas_img.width / icons.CELL), round(c[2] * atlas_img.height / icons.CELL))
                 for c in known.values()}
+        round_bytes = read_base(ROUND_ATLAS)
+        round_path = os.path.join(work, "round.blp")
+        write_verified(round_path, round_bytes)
+        round_img = blp.decode(round_path)
         if f"{key}_MALE" in known:
             col = round(known[f"{key}_MALE"][0] * atlas_img.width / icons.CELL)
             log(f"  race icons: reusing atlas column {col}")
         else:
-            col = icons.free_column(atlas_img, used)
+            col = icons.free_column(atlas_img, used, round_img)
             log(f"  race icons: atlas column {col}")
         for row, sx in ((0, "Male"), (2, "Female")):
             m = src[sx]
@@ -293,9 +298,14 @@ def build_race(*, install_dir: str, client_dir: str, out_dir: str, listfile: str
                 write_verified(p, bfa.read(a["FileDataID"]))
             img = icons.crop_atlas_member(blp.decode(p), m)
             atlas_bytes = icons.splice(atlas_bytes, (col, row), img)
+            # the info panel's round portrait: same cell, cut to the circle of column 0's (Human)
+            mask = round_img.crop((0, row * icons.CELL, icons.CELL, (row + 1) * icons.CELL)).getchannel("A")
+            round_bytes = icons.splice(round_bytes, (col, row), icons.round_icon(img, mask))
             icon_coords[f"{key}_{sx.upper()}"] = icons.coords(col, row, atlas_img.size)
-        out_atlas = os.path.join(client_out, *ATLAS.split("\\"))
-        res.files.append(write_verified(out_atlas, atlas_bytes, lambda p: blp.verify_blp(p, atlas_img.size)))
+        # spliced into the client's own atlases: their mip chains are whatever those files have
+        for rel, data, size in ((ATLAS, atlas_bytes, atlas_img.size), (ROUND_ATLAS, round_bytes, round_img.size)):
+            res.files.append(write_verified(os.path.join(client_out, *rel.split("\\")), data,
+                                            lambda p, size=size: blp.verify_blp(p, size, full_chain=False)))
     except (ValueError, KeyError, blp.BLPError) as e:
         res.warnings.append(f"race icons: {e}; using the {look_file.title()} icons instead")
         for sx in ("MALE", "FEMALE"):

@@ -28,13 +28,28 @@ def test_palettized_matches_blizzard_layout(tmp_path):
     h = blp.header(data)
     assert (h["type"], h["encoding"], h["alpha_depth"], h["alpha_encoding"], h["has_mips"]) == (1, 1, 8, 8, 1)
     assert h["mips"][0][0] == 1172                                   # header + palette, like Blizzard files
-    assert [s for _, s in h["mips"]] == [16384, 4096, 1024, 256, 64, 16, 4]   # 128x64 .. 2x1, idx + alpha
+    # 128x64 .. 1x1 (index + alpha bytes): 8 levels, like Blizzard's own 128x64 ArmUpper textures -
+    # a chain cut at 2x1 made the client reject Kul Tiran female hair (green)
+    assert [s for _, s in h["mips"]] == [16384, 4096, 1024, 256, 64, 16, 4, 2]
     p = tmp_path / "t.blp"; p.write_bytes(data)
     back = blp.decode(str(p))
     assert back.size == (128, 64) and back.getpixel((5, 5)) == (40, 80, 120, 200)
 
     opaque = blp.header(blp.encode_palettized(Image.new("RGB", (64, 64), (1, 2, 3))))
     assert opaque["alpha_depth"] == 0 and opaque["mips"][0][1] == 64 * 64      # no alpha bytes
+
+
+def test_mip_chain_reaches_1x1_and_short_chains_are_refused(tmp_path):
+    wide = blp.header(blp.encode_palettized(Image.new("RGB", (1024, 512), (9, 9, 9))))
+    assert len(wide["mips"]) == 11 and wide["mips"][-1][1] == 1                 # ... 2x1, 1x1
+    short = bytearray(blp.encode_palettized(Image.new("RGB", (16, 8), (9, 9, 9))))
+    struct.pack_into("<I", short, 20 + 4 * 4, 0)                               # drop the 1x1 level
+    struct.pack_into("<I", short, 84 + 4 * 4, 0)
+    p = tmp_path / "short.blp"
+    p.write_bytes(bytes(short))
+    with pytest.raises(blp.BLPError, match="4 mip levels, a 16x8 texture needs 5"):
+        blp.verify_blp(str(p))
+    blp.verify_blp(str(p), full_chain=False)
 
 
 @pytest.mark.parametrize("depth,plane,expect", [

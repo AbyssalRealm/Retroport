@@ -171,6 +171,24 @@ def test_icon_splice_touches_only_its_cell(tmp_path):
     assert icons.coords(5, 2, (512, 256)) == (0.625, 0.75, 0.5, 0.75)
 
 
+def test_round_portrait_atlas_shares_the_cell_and_the_circle():
+    # Blizzard's round atlas has Cataclysm's Worgen in column 5: a new race skips it there too
+    races = Image.new("RGBA", (512, 256), (0, 0, 0, 0))
+    races.paste((0, 0, 255, 255), (0, 0, 320, 256))
+    rounds = races.copy()
+    rounds.paste((90, 90, 90, 255), (320, 0, 384, 256))
+    assert icons.free_column(races, set()) == 5 and icons.free_column(races, set(), rounds) == 6
+    # the round portrait takes the mask's alpha exactly; the square icon's frame is zoomed out
+    mask = Image.new("L", (64, 64), 0)
+    mask.paste(255, (16, 16, 48, 48))
+    square = Image.new("RGBA", (64, 64), (200, 0, 0, 255))
+    square.paste((0, 0, 0, 255), (0, 0, 64, 4))                   # a dark frame line along the top
+    out = icons.round_icon(square, mask)
+    assert out.getchannel("A").tobytes() == mask.tobytes()
+    r, g, b, _a = out.getpixel((32, 2))
+    assert r > 180 and g < 10 and b < 10                          # the frame fell outside (resampled)
+
+
 def test_sql_mirrors_the_template_race():
     install, undo = race_sql(SPECS, "Kul Tiran", {9001: 49, 9002: 50})
     assert "SET @RACE := 22, @TEMPLATE := 1, @BIT := 2097152, @TEMPLATE_BIT := 1;" in install
@@ -245,9 +263,11 @@ def test_lettered_patches_rank_above_lettered_locale_patches(tmp_path, monkeypat
 
 def test_unmanaged_groups_keep_only_a_piece_that_fills_a_hole():
     from retroport.character.convert import unmanaged_geoset_remap
-    # belt: the band 1802 is welded to the body along one side only, the sash 1803 is closed ->
-    # the body is whole without them, so both hide (third client test: a "3D belt" under armour)
-    assert unmanaged_geoset_remap({0, 1802, 1803}, {1802: 0.5, 1803: 0.0}) == {1802: None, 1803: None}
+    # belts are the client's (1801 + the belt's geoset value, as BfA): left alone (fourth test -
+    # hiding them took the band away from belts that ask for it)
+    assert unmanaged_geoset_remap({0, 1802, 1803}, {1802: 0.5, 1803: 0.0}) == {}
+    # a group whose pieces all lie on a closed body hides whole
+    assert unmanaged_geoset_remap({0, 2302, 2303}, {2302: 0.5, 2303: 0.0}) == {2302: None, 2303: None}
     # feet: both fill the hole -> the default 2001, the alternative hides
     assert unmanaged_geoset_remap({0, 2001, 2002}, {2001: 1.0, 2002: 0.83}) == {2001: 0, 2002: None}
     # no default, one filler -> that one

@@ -303,11 +303,12 @@ else is a `conflict`. Replaced files (and, with `--clean`, leftovers in the race
 package doesn't contain) go to `<package>\backups\<time>\` first; `uninstall` restores them
 and refuses if you edited an installed file afterwards.
 
-**Geosets 3.3.5 doesn't switch** - 3.3.5 switches groups 0-17 and draws every variant of the
-rest. Per group the converter keeps the piece that fills a hole in the default body (its open
-edges meet the body's: Kul Tiran 2001 feet, 2201 torso) and hides the others; a group none of
-whose pieces does is hidden whole - the Kul Tiran belt band (1802) and sash (1803) lie on a
-closed body and belong only under belts that call for them, so belts show as texture.
+**Geosets 3.3.5 doesn't switch** - 3.3.5 hides geosets 0-2000 and shows one value per group
+0-18; ids above 2000 are never hidden, so every variant of BfA's groups 20+ draws at once. Per
+such group the converter keeps the piece that fills a hole in the default body (its open
+edges meet the body's: Kul Tiran 2001 feet, 2201 torso) and hides the others. The belt group
+(18) is the client's, as in BfA: a belt whose display has `GeosetGroup[0]` 1 shows the Kul
+Tiran band (1802), 2 the sash (1803), 0 (most belts) only its texture.
 
 **Cloaks** - BfA characters draw one cloak variant (geoset 1507) as cape texture + guild
 emblem layer (texture types 16-18, which 3.3.5 lacks); the converter drops that empty second

@@ -1,11 +1,19 @@
-"""Add race icons to the character-create icon atlas (UI-CharacterCreate-Races.blp).
+"""Add race icons to the character-create icon atlases.
 
-The 3.3.5a atlas is 512x256 DXT: 64x64 cells, 8 columns x 4 rows; rows 0/1 hold
-Alliance/Horde male icons and rows 2/3 the females, columns 0-4 are taken. A new race
-gets the first column whose row-0 and row-2 cells are empty (male, female).
+* UI-CharacterCreate-Races.blp - the race buttons (square, framed icons);
+* UI-CharacterCreate-RacesRound.blp - the round portrait on the race info panel
+  (``CharacterCreateRaceIcon``), addressed with the same ``RACE_ICON_TCOORDS``.
+
+Both 3.3.5a atlases are 512x256 DXT: 64x64 cells, 8 columns x 4 rows; rows 0/1 hold
+Alliance/Horde male icons and rows 2/3 the females, columns 0-4 are taken. Blizzard's
+round atlas also carries Cataclysm's Worgen (column 5, rows 0/2) and Goblin (rows 1/3),
+unused by 3.3.5. A new race gets the first column whose row-0 and row-2 cells are empty
+(male, female) - in both atlases when both are given.
 
 The new icons are encoded as DXT blocks and spliced into every mip level where the
 cell is at least one 4x4 block, so the existing icons stay bit-for-bit as they were.
+BfA has no round race portraits: the round one is the square icon cut to the circle of
+one of the round atlas's own portraits (``round_icon``).
 """
 
 from __future__ import annotations
@@ -27,21 +35,36 @@ def _block_format(h: dict) -> tuple[str, int]:
     return ("DXT3", 16) if h["alpha_encoding"] == 1 else ("DXT5", 16)
 
 
-def free_column(atlas: Image.Image, used: set[tuple[int, int]]) -> int:
-    """First column whose male (row 0) and female (row 2) cells are empty and unused."""
+def free_column(atlas: Image.Image, used: set[tuple[int, int]], *others: Image.Image) -> int:
+    """First column whose male (row 0) and female (row 2) cells are empty and unused - in
+    ``atlas`` and every one of ``others`` (the round portrait atlas shares the coordinates)."""
     cols = atlas.width // CELL
-    alpha = atlas.getchannel("A")
+    alphas = [a.getchannel("A") for a in (atlas, *others)]
     for c in range(cols):
         if (c, 0) in used or (c, 2) in used:
             continue
         empty = True
-        for row in (0, 2):
-            box = (c * CELL + 4, row * CELL + 4, (c + 1) * CELL - 4, (row + 1) * CELL - 4)
-            if alpha.crop(box).getextrema()[1] > 16:
-                empty = False
+        for alpha in alphas:
+            for row in (0, 2):
+                box = (c * CELL + 4, row * CELL + 4, (c + 1) * CELL - 4, (row + 1) * CELL - 4)
+                if alpha.crop(box).getextrema()[1] > 16:
+                    empty = False
         if empty:
             return c
     raise ValueError("no free column left in the race icon atlas")
+
+
+def round_icon(icon: Image.Image, mask: Image.Image, zoom: float = 1.12) -> Image.Image:
+    """A round portrait from a square race icon: zoomed a little so the icon's frame falls
+    outside the circle, then given ``mask``'s alpha - a round portrait of the same atlas row,
+    so the shape and soft edge match the others exactly."""
+    icon = icon.convert("RGBA").resize((CELL, CELL), Image.Resampling.LANCZOS)
+    side = round(CELL * zoom)
+    if side > CELL:
+        off = (side - CELL) // 2
+        icon = icon.resize((side, side), Image.Resampling.LANCZOS).crop((off, off, off + CELL, off + CELL))
+    icon.putalpha(mask.convert("L").resize((CELL, CELL), Image.Resampling.LANCZOS))
+    return icon
 
 
 def coords(col: int, row: int, size: tuple[int, int]) -> tuple[float, float, float, float]:
