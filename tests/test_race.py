@@ -337,18 +337,20 @@ def test_customization_rows_are_written_as_contiguous_sections():
 
 # --------------------------------------------------------------------------- fifth client test
 
-def _wide_skin(tmp_path, parts):
+def _wide_skin(tmp_path, parts, tail=0):
     """A skin whose submeshes are ``parts`` = [(geoset id, index count, drawn)], laid out in order
-    (index values tag their submesh: i + 1), with the high start word in ``level`` like the converter."""
+    (index values tag their submesh: i + 1), with the high start word in ``level`` like the converter;
+    ``tail`` indices (value 99) after them belong to no submesh."""
     from retroport.formats import structs as S
     skin = bytearray(0x30)
     skin[0:4] = b"SKIN"
     S.write_m2array(skin, S.SKIN_VERTICES, 64, len(skin))
     skin += bytes(128)
-    total = sum(c for _g, c, _d in parts)
+    total = sum(c for _g, c, _d in parts) + tail
     S.write_m2array(skin, S.SKIN_INDICES, total, len(skin))
     for i, (_g, count, _d) in enumerate(parts):
         skin += struct.pack(f"<{count}H", *([i + 1] * count))
+    skin += struct.pack(f"<{tail}H", *([99] * tail))
     S.write_m2array(skin, S.SKIN_SUBMESHES, len(parts), len(skin))
     start = 0
     for gid, count, _d in parts:
@@ -386,6 +388,14 @@ def test_wide_skins_put_switchable_geosets_below_the_16_bit_line(tmp_path):
     # ends past it is fine - the id the client matches on comes from its start)
     p2 = _wide_skin(tmp_path, [(0, 1000, True), (2, 40000, True), (3, 30000, True), (4, 5000, True)])
     assert order_skin_indices([str(p2)])[0]["past_line"] == [4]
+    # a clamped LOD skin: the indices of dropped submeshes stay behind the reordered ones
+    p3 = _wide_skin(tmp_path, [(0, 60000, True), (1502, 4000, True)], tail=2000)
+    rep, = order_skin_indices([str(p3)])
+    data = p3.read_bytes()
+    n_t, t_off = struct.unpack_from("<II", data, 0x0C)
+    idx = struct.unpack_from(f"<{n_t}H", data, t_off)
+    assert rep["reordered"] and rep["past_line"] == [] and n_t == 66000
+    assert idx[:4000] == (2,) * 4000 and idx[4000:64000] == (1,) * 60000 and idx[64000:] == (99,) * 2000
 
 
 def test_every_facial_style_gets_a_facial_hair_texture_row():

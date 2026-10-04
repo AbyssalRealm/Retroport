@@ -218,11 +218,13 @@ def order_skin_indices(skin_paths: list[str]) -> list[dict]:
         for i in range(n_s):
             sid, level, _vs, _vc, start, count = struct.unpack_from("<HHHHHH", data, s_off + i * 48)
             subs.append((i, sid, (level << 16) | start, count))
-        report = {"skin": os.path.basename(sp), "indices": n_t,
+        report = {"skin": os.path.basename(sp), "indices": n_t, "reordered": False,
                   "switchable": sum(c for i, sid, _f, c in subs if sid and i in drawn), "past_line": []}
         spans = sorted((f, f + c) for _i, _sid, f, c in subs if c)
-        contiguous = all(a[1] == b[0] for a, b in zip(spans, spans[1:])) and spans and spans[0][0] == 0 \
-            and spans[-1][1] == n_t
+        # submeshes tile the buffer from 0; a tail nothing points at (submeshes clamp_skin_submeshes
+        # dropped) is kept as it is, after them
+        contiguous = bool(spans) and spans[0][0] == 0 and spans[-1][1] <= n_t \
+            and all(a[1] == b[0] for a, b in zip(spans, spans[1:]))
         if n_t > SKIN_U16 and contiguous:
             indices = struct.unpack_from(f"<{n_t}H", data, t_off)
             order = sorted(subs, key=lambda s: (0 if s[1] and s[0] in drawn else 1 if s[0] in drawn else 2, s[0]))
@@ -230,7 +232,9 @@ def order_skin_indices(skin_paths: list[str]) -> list[dict]:
             for i, _sid, first, count in order:
                 starts[i] = len(out)
                 out.extend(indices[first:first + count])
+            out.extend(indices[spans[-1][1]:])
             struct.pack_into(f"<{n_t}H", data, t_off, *out)
+            report["reordered"] = True
             for i, _sid, _first, _count in subs:
                 struct.pack_into("<H", data, s_off + i * 48 + 2, starts[i] >> 16)       # level
                 struct.pack_into("<H", data, s_off + i * 48 + 8, starts[i] & SKIN_U16)  # indexStart

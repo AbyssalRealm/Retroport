@@ -309,7 +309,9 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
                                                             for g, v in sorted(remap.items())))
     for rep in fixup.order_skin_indices(skins):
         if rep["indices"] > fixup.SKIN_U16:
-            log(f"  {rep['skin']}: {rep['indices']} indices, switchable geosets ({rep['switchable']}) laid out first")
+            log(f"  {rep['skin']}: {rep['indices']} indices, " + (
+                f"switchable geosets ({rep['switchable']}) laid out first" if rep["reordered"]
+                else "left as it is (its submeshes share or skip index ranges)"))
         if rep["past_line"] and rep["skin"].endswith("00.skin"):
             res.warnings.append(
                 f"{rep['skin']}: switchable geosets {rep['past_line']} start past index 65,535, where the stock "
