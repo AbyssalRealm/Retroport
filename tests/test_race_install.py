@@ -14,15 +14,20 @@ from retroport.race.build import sha256
 
 
 class _FakeClient:
-    """Stands in for ClientData: the client loads `files[rel]` from `label`."""
+    """Stands in for ClientData: the client loads `files[rel]` from `label`; `above` the files a
+    patch outranking the install's patch holds (rel -> its label)."""
     files: dict = {}
+    above: dict = {}
 
-    def __init__(self, _client_dir):
-        pass
+    def __init__(self, _client_dir, top=None):
+        self.top = top
 
     def find(self, rel):
         data = self.files.get(rel.replace("/", "\\"))
         return ("patch-H (folder)", data) if data is not None else None
+
+    def shadowed_by(self, rel):
+        return self.above.get(rel.replace("/", "\\"))
 
 
 def _package(tmp_path, bases):
@@ -49,6 +54,24 @@ def _client(tmp_path):
     server.mkdir()
     (server / "ChrRaces.dbc").write_bytes(b"server chr")
     return tmp_path / "wow", root, server
+
+
+def test_a_file_a_higher_patch_holds_is_installed_and_reported_shadowed(tmp_path, monkeypatch):
+    """The retail backport kit's patch-I.MPQ, made on top of ours, outranks patch-H: our Item
+    tables go in all the same, the plan says the client loads the kit's copy until it is rebuilt."""
+    wow, _root, _server = _client(tmp_path)
+    pkg = _package(tmp_path, {"client/DBFilesClient/CreatureDisplayInfo.dbc": {"source": "patch-H",
+                                                                             "sha256": sha256(b"my cdi")}})
+    _FakeClient.files = {"DBFilesClient\CreatureDisplayInfo.dbc": b"my cdi"}
+    _FakeClient.above = {"DBFilesClient\CreatureDisplayInfo.dbc": "patch-I.MPQ"}
+    monkeypatch.setattr(install, "ClientData", _FakeClient)
+    try:
+        plan = install.plan_install(str(pkg), str(wow))
+    finally:
+        _FakeClient.above = {}
+    kinds = {a.rel: a.kind for a in plan.actions}
+    assert kinds["client/DBFilesClient/CreatureDisplayInfo.dbc"] == "replace" and not plan.blocked
+    assert plan.shadowed == {"client/DBFilesClient/CreatureDisplayInfo.dbc": "patch-I.MPQ"}
 
 
 def test_install_replaces_only_what_it_was_built_on(tmp_path, monkeypatch):
@@ -111,6 +134,95 @@ def test_uninstall_refuses_after_later_edits(tmp_path, monkeypatch):
     (root / "DBFilesClient" / "ChrRaces.dbc").write_bytes(b"edited after install")
     with pytest.raises(ValueError, match="changed after the install"):
         install.uninstall(receipt)
+
+
+def test_the_races_own_helmets_are_race_files(tmp_path, monkeypatch):
+    wow, root, server = _client(tmp_path)
+    pkg = _package(tmp_path, {})
+    meta = json.loads((pkg / "race.json").read_text())
+    (pkg / "race.json").write_text(json.dumps({**meta, "helmet_prefix": "Kt"}))
+    head = pkg / "client" / "Item" / "ObjectComponents" / "Head"
+    head.mkdir(parents=True)
+    (head / "Helm_A_KtM.m2").write_bytes(b"helm v2")
+    (head / "Helm_A_KtM00.skin").write_bytes(b"skin v2")
+    (head / "Helm_A_HuM.m2").write_bytes(b"not ours")
+    installed = root / "Item" / "ObjectComponents" / "Head"
+    installed.mkdir(parents=True)
+    (installed / "Helm_A_KtM.m2").write_bytes(b"helm v1")            # an earlier build's
+    (installed / "Helm_A_HuM.m2").write_bytes(b"Human helm")         # the client's own
+    (installed / "Helm_Gone_KtF00.skin").write_bytes(b"old")         # an earlier build's, not in this one
+    (installed / "Helm_Gone_HuF00.skin").write_bytes(b"theirs")
+    _FakeClient.files = {}
+    monkeypatch.setattr(install, "ClientData", _FakeClient)
+    plan = install.plan_install(str(pkg), str(wow), clean=True)
+    kinds = {a.rel: a.kind for a in plan.actions}
+    assert kinds["client/Item/ObjectComponents/Head/Helm_A_KtM.m2"] == "replace"
+    assert kinds["client/Item/ObjectComponents/Head/Helm_A_KtM00.skin"] == "add"
+    assert kinds["client/Item/ObjectComponents/Head/Helm_A_HuM.m2"] == "conflict"
+    assert kinds["client/Item/ObjectComponents/Head/Helm_Gone_KtF00.skin"] == "leftover"
+    assert "client/Item/ObjectComponents/Head/Helm_Gone_HuF00.skin" not in kinds
+
+
+def test_the_races_select_scene_folder_is_its_own(tmp_path, monkeypatch):
+    wow, root, server = _client(tmp_path)
+    pkg = _package(tmp_path, {})
+    scene = pkg / "client" / "Interface" / "Glues" / "Models" / "UI_KulTiran"
+    scene.mkdir(parents=True)
+    (scene / "UI_KulTiran.m2").write_bytes(b"docks v2")
+    other = pkg / "client" / "Interface" / "Glues" / "Models" / "UI_Human"
+    other.mkdir(parents=True)
+    (other / "UI_Human.m2").write_bytes(b"not ours")
+    installed = root / "Interface" / "Glues" / "Models"
+    (installed / "UI_KulTiran").mkdir(parents=True)
+    (installed / "UI_KulTiran" / "UI_KulTiran.m2").write_bytes(b"docks v1")
+    (installed / "UI_KulTiran" / "old_rope.blp").write_bytes(b"an earlier build's")
+    (installed / "UI_Human").mkdir(parents=True)
+    (installed / "UI_Human" / "UI_Human.m2").write_bytes(b"the client's")
+    _FakeClient.files = {}
+    monkeypatch.setattr(install, "ClientData", _FakeClient)
+    kinds = {a.rel: a.kind for a in install.plan_install(str(pkg), str(wow), clean=True).actions}
+    assert kinds["client/Interface/Glues/Models/UI_KulTiran/UI_KulTiran.m2"] == "replace"
+    assert kinds["client/Interface/Glues/Models/UI_KulTiran/old_rope.blp"] == "leftover"
+    assert kinds["client/Interface/Glues/Models/UI_Human/UI_Human.m2"] == "conflict"
+
+
+def test_what_an_earlier_install_added_and_the_package_no_longer_holds_is_moved_out(tmp_path, monkeypatch):
+    wow, root, server = _client(tmp_path)
+    pkg = _package(tmp_path, {"client/DBFilesClient/CreatureDisplayInfo.dbc":
+                              {"source": "patch-H", "sha256": sha256(b"my cdi")}})
+    _FakeClient.files = {"DBFilesClient\\CreatureDisplayInfo.dbc": b"my cdi"}
+    monkeypatch.setattr(install, "ClientData", _FakeClient)
+    folder = pkg / "client" / "Item" / "TextureComponents" / "TorsoLowerTexture"
+    folder.mkdir(parents=True)
+    (folder / "Shirt_TL_U.blp").write_bytes(b"fixed shirt")
+    (folder / "Robe_TL_U.blp").write_bytes(b"fixed robe")
+    first = install.apply_install(install.plan_install(str(pkg), str(wow)))
+    installed = root / "Item" / "TextureComponents" / "TorsoLowerTexture"
+    assert (installed / "Shirt_TL_U.blp").read_bytes() == b"fixed shirt"
+    _FakeClient.files = {"DBFilesClient\\CreatureDisplayInfo.dbc": b"new cdi"}
+    (installed / "Robe_TL_U.blp").write_bytes(b"robe the user edited since")
+    for f in folder.iterdir():                                          # the next build makes none
+        f.unlink()
+    plan = install.plan_install(str(pkg), str(wow), clean=True)
+    kinds = {a.rel: a.kind for a in plan.actions}
+    assert kinds["client/Item/TextureComponents/TorsoLowerTexture/Shirt_TL_U.blp"] == "leftover"
+    assert "client/Item/TextureComponents/TorsoLowerTexture/Robe_TL_U.blp" not in kinds   # changed: theirs now
+    second = install.apply_install(plan, clean=True)
+    assert not (installed / "Shirt_TL_U.blp").exists() and (installed / "Robe_TL_U.blp").exists()
+    install.uninstall(second)
+    assert (installed / "Shirt_TL_U.blp").read_bytes() == b"fixed shirt"
+    assert json.loads(open(first).read())["added"]
+
+
+def test_a_file_added_then_replaced_is_known_by_its_last_copy_however_its_path_was_written(tmp_path):
+    # the install that added AnimationData.dbc wrote F:/WoW\Data\..., the one that replaced it F:\WoW\Data\...
+    (tmp_path / "installs").mkdir()
+    (tmp_path / "installs" / "1.json").write_text(json.dumps(
+        {"added": [{"target": "F:/WoW\\Data\\patch-H.MPQ\\DBFilesClient\\AnimationData.dbc", "sha256": "first"}]}))
+    (tmp_path / "installs" / "2.json").write_text(json.dumps(
+        {"replaced": [{"target": "F:\\WoW\\Data\\patch-H.MPQ\\DBFilesClient\\AnimationData.dbc", "sha256": "second"}]}))
+    assert install._added_earlier(str(tmp_path)) == {
+        os.path.normpath("F:/WoW/Data/patch-H.MPQ/DBFilesClient/AnimationData.dbc"): "second"}
 
 
 # --------------------------------------------------------------------------- cloak emblem layer

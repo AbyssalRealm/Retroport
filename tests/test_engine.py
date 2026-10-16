@@ -45,6 +45,16 @@ def test_scoped_listfile_follows_the_skeleton(tmp_path):
 
 
 @needs_wotlkconv
+def test_one_scoped_listfile_serves_a_batch(tmp_path):
+    lf = tmp_path / "listfile.csv"
+    lf.write_text("111;item/a.blp\n222;item/b.blp\n555;unrelated/thing.m2\n")
+    models = [build_m2([("TXID", struct.pack("<I", 111))]), build_m2([("TXID", struct.pack("<I", 222))])]
+    scoped = engine.scoped_listfile_for(models, [str(tmp_path)], str(lf))
+    assert scoped.path_for(111) == "item\\a.blp" and scoped.path_for(222) == "item\\b.blp"
+    assert scoped.path_for(555) is None and scoped.id_for("item\\b.blp") == 222
+
+
+@needs_wotlkconv
 def test_convert_with_wotlkconv_writes_verified_md20(tmp_path):
     src = tmp_path / "src"; src.mkdir()
     (src / "beast.m2").write_bytes(build_m2([]))

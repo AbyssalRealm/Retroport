@@ -14,6 +14,13 @@ replaces blocks with the same tag instead of adding another copy.
 * GlueParent.lua - races without their own create/select scene borrow another's (and its
   music: character select plays ``GlueAmbienceTracks[<the race's own name>]``).
 * GlueStrings.lua - description, ability and "disabled" strings.
+
+On the BfA-style screen of a glue package (``retroport glue``; its CharacterCreate.lua sets
+``RETROPORT_GLUE_STYLE``) the race buttons are made as needed and laid out by faction already, and
+racial text per faction is built in: only the icon coordinates are added, where the race's
+head is for the customize zoom (``CHARCREATE_ZOOM_HEAD``, ``glue/zoom.py``) and, for a race BfA
+lists with the classic ones (a Pandaren), that it goes on the core page (``CHARCREATE_CORE_RACES``)
+- in the icons block, which a glue package carries over when it is rebuilt.
 """
 
 from __future__ import annotations
@@ -21,6 +28,7 @@ from __future__ import annotations
 import re
 
 BEGIN, END = "-- [retroport] begin {}", "-- [retroport] end {}"
+BFA_STYLE_MARKER = "RETROPORT_GLUE_STYLE"
 
 _MAX_RACES = re.compile(r"^(\s*MAX_RACES\s*=\s*)(\d+)(\s*;?)", re.M)
 _BUTTON = re.compile(r'name="CharacterCreateRaceButton(\d+)"')
@@ -96,10 +104,16 @@ def strip_block(text: str, tag: str) -> str:
 
 
 def put_block(text: str, tag: str, body: str, *, after: re.Pattern | None = None) -> str:
-    """Replace (or add) the tagged block: after the first ``after`` match, else at the end."""
-    text = strip_block(text, tag)
+    """Replace the tagged block where it stands, or add it: after the first ``after`` match, else
+    at the end. Replacing in place keeps a file two packages patch (a glue package and a race's)
+    the same however often either is rebuilt on the other."""
     eol = _eol(text)
     block = eol.join([BEGIN.format(tag), *body.strip("\n").split("\n"), END.format(tag)]) + eol
+    pat = re.compile(r"[ \t]*" + re.escape(BEGIN.format(tag)) + r".*?" + re.escape(END.format(tag)) + r"[ \t]*\r?\n?",
+                     re.S)
+    m = pat.search(text)
+    if m:
+        return text[:m.start()] + block + pat.sub("", text[m.end():])
     if after is not None:
         m = after.search(text)
         if not m:
@@ -126,21 +140,40 @@ def icon_coords(lua: str) -> dict[str, tuple[float, float, float, float]]:
     return found
 
 
+def bfa_style(lua_or_xml: str) -> bool:
+    """A glue package's BfA-style character create (its Lua sets the marker; its XML has BfA's
+    race button template instead of 3.3.5's)."""
+    return BFA_STYLE_MARKER in lua_or_xml or 'name="CharCreateRaceButtonTemplate"' in lua_or_xml
+
+
 def patch_character_create_lua(lua: str, max_races: int, icons: dict[str, tuple[float, float, float, float]],
-                               tag: str) -> str:
+                               tag: str, zoom_heads: dict[str, tuple[float, float]] | None = None,
+                               core: bool = False) -> str:
+    """``zoom_heads``: ``RACE_SEX`` -> (height, forward) of the race's head, for the BfA-style
+    screen's customize zoom (3.3.5's own screen has none). ``core``: the BfA-style screen shows the
+    race on its core page, not with the allied races (3.3.5's own screen has one page)."""
     m = _MAX_RACES.search(lua)
     if not m:
         raise ValueError("MAX_RACES not found in CharacterCreate.lua")
     if int(m.group(2)) < max_races:
         lua = lua[:m.start()] + f"{m.group(1)}{max_races}{m.group(3)}" + lua[m.end():]
     lines = [f'RACE_ICON_TCOORDS["{k}"] = {{{", ".join(f"{v:g}" for v in c)}}};' for k, c in icons.items()]
+    bfa = bfa_style(lua)
+    if bfa and zoom_heads:
+        lines += [f'CHARCREATE_ZOOM_HEAD["{k}"] = {{ {h:.3f}, {f:.3f} }};' for k, (h, f) in sorted(zoom_heads.items())]
+    if bfa and core:
+        lines.append(f'CHARCREATE_CORE_RACES["{tag}"] = true;')
     lua = put_block(lua, f"icons {tag}", "\n".join(lines))
+    if bfa:
+        return strip_block(lua, "race layout")
     return put_block(lua, "race layout", LAYOUT_LUA)
 
 
 # --------------------------------------------------------------------------- CharacterCreate.xml
 
 def patch_character_create_xml(xml: str, max_races: int) -> str:
+    if bfa_style(xml):
+        return xml                      # it makes race buttons as it needs them
     buttons = sorted(int(n) for n in set(_BUTTON.findall(xml)))
     if not buttons:
         raise ValueError("no CharacterCreateRaceButton<n> in CharacterCreate.xml")
@@ -162,13 +195,16 @@ def patch_character_create_xml(xml: str, max_races: int) -> str:
 
 # --------------------------------------------------------------------------- GlueParent.lua / GlueStrings.lua
 
-def patch_glue_parent(lua: str, aliases: dict[str, str], tag: str) -> str:
+def patch_glue_parent(lua: str, aliases: dict[str, str], tag: str, music: dict[str, str] | None = None) -> str:
+    """``aliases``: races whose scene is another race's (``SetBackgroundModel`` loads that one);
+    ``music``: races whose scene plays another race's music. An aliased race borrows the music too."""
     if "function SetBackgroundModel" not in lua:
         raise ValueError("SetBackgroundModel not found in GlueParent.lua")
     lua = put_block(lua, "background aliases", BACKGROUND_LUA)
     lines = []
     for k, v in aliases.items():
         lines.append(f'GLUE_BACKGROUND_ALIASES["{k.upper()}"] = {lua_string(v)};')
+    for k, v in {**(music or {}), **aliases}.items():
         # CharacterSelect_OnShow plays GlueAmbienceTracks[<the race's own scene name>] directly, and
         # PlayGlueAmbience(nil) is a Lua error when coming back from character create.
         lines.append(f'GlueAmbienceTracks["{k.upper()}"] = GlueAmbienceTracks["{k.upper()}"] '

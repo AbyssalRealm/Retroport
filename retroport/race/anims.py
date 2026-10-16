@@ -10,9 +10,13 @@
   played once (Human's lasts 4.3 s). A one-shot emote animation - an Emotes row without a special
   proc, an AnimationData name starting "Emote" - shorter than 60% of the template's is repeated
   to match it. Combat and movement animations are never repeated.
+* Ids. 3.3.5 plays no animation id past 505, whatever AnimationData holds: CM2Model refuses ids
+  from 506 on (0x826050, 0x825F40) and the unit stands. An animation BfA added (Haymaker, 1444)
+  takes one of 3.3.5's spare spell ids its model leaves free (visuals.CUSTOM_SPELL):
+  ``renumber_sequences`` moves the model's sequences there.
 
 M2 (12340) sequences: header 0x1C, 64 bytes each: +0 id, +2 variation, +4 duration (ms),
-+12 flags, +20/+24 replay min/max.
++12 flags, +18 padding, +20/+24 replay min/max. Sequence lookup table: header 0x24.
 """
 
 from __future__ import annotations
@@ -21,6 +25,10 @@ import struct
 
 BLEND_FLAGS = 0x81
 SHORT = 0.6
+PAD = 0x12                      # a sequence's unused uint16: the BfA id of one renumber_sequences moved
+PARKED = 0xFFFE                 # where a BfA animation goes when its id is taken: nothing plays it
+NO_SEQUENCE = 0xFFFF            # an empty lookup slot
+MAX_ANIM = 506                  # CM2Model plays no animation id from here on (3.3.5's AnimationData: 0-505)
 
 
 def sequences(m2: bytes) -> list[tuple[int, int, int, int, int, int, int]]:
@@ -60,6 +68,67 @@ def align_sequences(m2: bytes, template: bytes, one_shot: set[int]) -> tuple[byt
                 n = max(2, round(theirs / dur))
                 struct.pack_into("<II", out, rec + 20, n, n)
                 changes.append(f"{aid}.{var} repeats x{n} ({dur} ms -> {dur * n} ms; template {round(theirs)} ms)")
+    return bytes(out), changes
+
+
+def client_sequence(m2: bytes, anim: int) -> int:
+    """The sequence the client plays for an animation id (CM2Model, 0x8260C0): with a lookup table,
+    the entry at id % size, probing on (i * i + last slot) % size past other ids; with none, the
+    first sequence of that id - and none for an id past ``MAX_ANIM``. NO_SEQUENCE: none."""
+    if anim >= MAX_ANIM:
+        return NO_SEQUENCE
+    seqs = sequences(m2)
+    n, off = struct.unpack_from("<II", m2, 0x24)
+    if not n:
+        return next((i for i, s in enumerate(seqs) if s[1] == anim), NO_SEQUENCE)
+    slot, probe = anim % n, 0
+    while (index := struct.unpack_from("<H", m2, off + 2 * slot)[0]) != NO_SEQUENCE and seqs[index][1] != anim:
+        probe += 1
+        if probe > n:
+            return NO_SEQUENCE
+        slot = (probe * probe + slot) % n
+    return index
+
+
+def own_ids(m2: bytes) -> set[int]:
+    """The model's animation ids as BfA's (a sequence ``renumber_sequences`` moved counts as BfA's
+    own id), so a rebuild sees the slots free that its earlier build took."""
+    return {struct.unpack_from("<H", m2, rec + PAD)[0] or aid for rec, aid, *_rest in sequences(m2)}
+
+
+def renumber_sequences(m2: bytes, ids: dict[int, int]) -> tuple[bytes, list[str]]:
+    """``m2`` with the sequences of each BfA animation id in ``ids`` under its 3.3.5 id, and the
+    lookup table finding them there. A BfA animation already at one of those ids is parked
+    (``PARKED``). Each moved sequence keeps its BfA id in its padding, so a rebuild first puts
+    every sequence back and the result depends only on ``ids``. Returns (model, changes)."""
+    out = bytearray(m2)
+    for rec, *_rest in sequences(m2):
+        bfa = struct.unpack_from("<H", out, rec + PAD)[0]
+        if bfa:
+            struct.pack_into("<H", out, rec, bfa)
+            struct.pack_into("<H", out, rec + PAD, 0)
+    taken = {new: bfa for bfa, new in ids.items()}
+    changes = []
+    for rec, aid, *_rest in sequences(bytes(out)):
+        new = ids.get(aid, PARKED if aid in taken else None)
+        if new is None or new == aid:
+            continue
+        struct.pack_into("<H", out, rec, new)
+        struct.pack_into("<H", out, rec + PAD, aid)
+        changes.append(f"{aid} -> {new}" if new != PARKED else f"{aid} parked ({taken[aid]} takes its id)")
+    n, off = struct.unpack_from("<II", out, 0x24)
+    seqs = sequences(bytes(out))
+    for new in sorted(set(ids.values())):
+        first = next((i for i, s in enumerate(seqs) if s[1] == new and s[2] == 0), None)
+        if first is None or not n:
+            continue
+        slot, probe = new % n, 0
+        while (index := struct.unpack_from("<H", out, off + 2 * slot)[0]) != NO_SEQUENCE and seqs[index][1] != new:
+            probe += 1
+            if probe > n:
+                raise ValueError(f"the sequence lookup table has no free slot for animation {new}")
+            slot = (probe * probe + slot) % n
+        struct.pack_into("<H", out, off + 2 * slot, first)
     return bytes(out), changes
 
 

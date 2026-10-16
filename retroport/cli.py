@@ -11,8 +11,9 @@
     retroport register-item --dbc-dir --out ...      add an ItemDisplayInfo row (+ Item.dbc repoint) + SQL
     retroport textures <blp|dir>... --out --target   resize armor/object textures for 3.3.5
     retroport helms <helm_x_hum.m2> --out ...        convert every 3.3.5 race/gender variant of a helm
-    retroport character --bfa ... --race --sex       port a BfA playable race (model, textures, DBC rows)
-    retroport race <Race> --bfa --client --out       make it playable: DBCs, create screen, server DBCs + SQL
+    retroport character --bfa|--retail ... --race --sex   port a BfA/retail playable race (model, textures, rows)
+    retroport race <Race> --bfa|--retail --client --out   make it playable: DBCs, create screen, server DBCs + SQL
+    retroport glue --bfa --client --out              character create laid out as BfA's, for every race
     retroport install <package> --client [--apply]   install it without overwriting your customizations
 
 Designed to run today against any folder. Point it at a wow.export extraction
@@ -703,8 +704,10 @@ def helms(
 
 @app.command()
 def character(
-    bfa: str = typer.Option(..., "--bfa", help="A local BfA (8.x) install, e.g. I:\\WoW Modding\\Clients\\WorldofWarcraft BFA."),
-    race: str = typer.Option(..., "--race", help="BfA race by ClientFileString or name, e.g. KulTiran."),
+    bfa: str = typer.Option("", "--bfa", help="A local BfA (8.x) install, e.g. I:\\WoW Modding\\Clients\\WorldofWarcraft BFA."),
+    retail: str = typer.Option("", "--retail", help="Or a local retail install (9.0+), e.g. I:\\World of Warcraft: "
+                               "its customization is projected onto 3.3.5's."),
+    race: str = typer.Option(..., "--race", help="Race by ClientFileString or name, e.g. KulTiran."),
     sex: str = typer.Option(..., "--sex", help="male or female."),
     out: str = typer.Option(..., "--out", help="Output root (laid out like the MPQ: Character\\..., DBFilesClient\\)."),
     race_id: int = typer.Option(33, "--race-id", help="3.3.5 race id for the new race's DBC rows."),
@@ -715,12 +718,13 @@ def character(
     target: str = typer.Option("hd", "--target", help="hd (512 body texture, e.g. the 3.3.5 HD patch) or classic (256)."),
     json_out: bool = typer.Option(False, "--json", help="Emit the JSON result envelope to stdout."),
 ) -> None:
-    """Port a BfA playable race/sex: model + layout-remapped CharSections textures + DBC rows."""
+    """Port a BfA or retail playable race/sex: model + layout-remapped CharSections textures + DBC rows."""
     from .character.convert import convert_character
 
     try:
-        r = convert_character(bfa, race, sex, out, race_id=race_id, listfile=listfile, dbd_dir=dbd,
-                              dbc_dir=dbc_dir or None, target=target,
+        install, product = _source_install(bfa, retail)
+        r = convert_character(install, race, sex, out, race_id=race_id, listfile=listfile, dbd_dir=dbd,
+                              dbc_dir=dbc_dir or None, target=target, product=product,
                               on_log=None if json_out else (lambda m: console.print(m, markup=False, highlight=False)))
     except (OSError, ValueError) as exc:
         if json_out:
@@ -739,10 +743,18 @@ def character(
         console.print(f"  [red]{c}[/]" if c.startswith("fail") else f"  {c}", highlight=False)
 
 
+def _source_install(bfa: str, retail: str) -> tuple[str, str | None]:
+    """(install folder, .build.info product) from --bfa / --retail: exactly one of them."""
+    if bool(bfa) == bool(retail):
+        raise ValueError("give one source: --bfa <BfA install> or --retail <retail install>")
+    return (retail, "wow") if retail else (bfa, None)
+
+
 @app.command(name="race")
 def race_cmd(
-    race: str = typer.Argument(..., help="BfA race by ClientFileString or name, e.g. KulTiran."),
-    bfa: str = typer.Option(..., "--bfa", help="A local BfA (8.x) install."),
+    race: str = typer.Argument(..., help="Race by ClientFileString or name, e.g. KulTiran, MagharOrc."),
+    bfa: str = typer.Option("", "--bfa", help="A local BfA (8.x) install."),
+    retail: str = typer.Option("", "--retail", help="Or a local retail install (9.0+), e.g. I:\\World of Warcraft."),
     client: str = typer.Option(..., "--client", help="Your 3.3.5a client folder (read only; its DBCs and UI are the base)."),
     out: str = typer.Option(..., "--out", help="Output folder (client\\, server\\, INSTALL.txt)."),
     listfile: str = typer.Option(..., "--listfile", help="Community listfile.csv."),
@@ -756,18 +768,34 @@ def race_cmd(
     look_template: int = typer.Option(1, "--look-template", help="Race whose voices, names, helmets and scene are borrowed."),
     target: str = typer.Option("hd", "--target", help="hd (512 body texture) or classic (256)."),
     reuse: bool = typer.Option(False, "--reuse", help="Reuse the character conversion already in --out."),
-    replace: bool = typer.Option(False, "--replace", help="Remove a previous build of these race ids first (rebuilds)."),
+    replace: bool = typer.Option(False, "--replace", help="Remove a previous build of these race ids first (rebuilds); "
+                                 "it is rebuilt where it was, under any race built after it."),
+    on_top: bool = typer.Option(False, "--on-top", help="With --replace: put the race after every other race "
+                                "instead (new ids; rebuild the races built after it afterwards)."),
+    template_helmets: bool = typer.Option(False, "--template-helmets",
+                                          help="Wear the look template's helmets, fitted, even where BfA has the race's own."),
+    template_outfits: bool = typer.Option(False, "--template-outfits",
+                                          help="Keep the template race's start armour instead of BfA's own "
+                                               "outfits for the race."),
+    template_racials: bool = typer.Option(False, "--template-racials",
+                                          help="Keep the faction template's racials (Human's, Orc's) instead of BfA's own."),
+    patch: str = typer.Option("patch-H.MPQ", "--patch", help="The folder patch the package installs into: the client "
+                              "is read as that patch sees it (a patch that outranks it, e.g. the retail backport "
+                              "kit's, is left out)."),
     json_out: bool = typer.Option(False, "--json", help="Emit the JSON result envelope to stdout."),
 ) -> None:
-    """Make a BfA race playable on 3.3.5a: character, DBCs, create-screen UI, server DBCs and SQL."""
+    """Make a BfA or retail race playable on 3.3.5a: character, DBCs, create-screen UI, server DBCs and SQL."""
     from .race.build import build_race
 
     try:
-        r = build_race(install_dir=bfa, client_dir=client, out_dir=out, listfile=listfile, dbd_dir=dbd, race=race,
+        install, product = _source_install(bfa, retail)
+        r = build_race(install_dir=install, product=product, client_dir=client, out_dir=out, listfile=listfile,
+                       dbd_dir=dbd, race=race,
                        name=name or None, alliance_id=alliance_id, horde_id=horde_id,
                        alliance_template=alliance_template, horde_template=horde_template,
                        look_template=look_template, server_dbc_dir=server_dbc or None, target=target,
-                       reuse=reuse, replace=replace,
+                       reuse=reuse, replace=replace, on_top=on_top, own_helmets=not template_helmets,
+                       own_racials=not template_racials, own_outfits=not template_outfits, patch=patch,
                        on_log=None if json_out else (lambda m: console.print(m, markup=False, highlight=False)))
     except (OSError, ValueError) as exc:
         if json_out:
@@ -786,16 +814,65 @@ def race_cmd(
     console.print(f"  install steps: {os.path.join(out, 'INSTALL.txt')}")
 
 
+@app.command(name="glue")
+def glue_cmd(
+    bfa: str = typer.Option(..., "--bfa", help="A local BfA (8.x) install."),
+    client: str = typer.Option(..., "--client", help="Your 3.3.5a client folder (read only; its UI files are the base)."),
+    out: str = typer.Option(..., "--out", help="Output folder (client\\, package.json, INSTALL.txt)."),
+    listfile: str = typer.Option(..., "--listfile", help="Community listfile.csv."),
+    dbd: str = typer.Option(..., "--dbd", help="WoWDBDefs 'definitions' folder."),
+    patch: str = typer.Option("patch-H.MPQ", "--patch", help="The folder patch the package installs into: the client "
+                              "is read as that patch sees it (a patch that outranks it, e.g. the retail backport "
+                              "kit's, is left out)."),
+) -> None:
+    """Character create and select laid out as Battle for Azeroth's, for every race (create zooms to the face)."""
+    from .glue.build import build_glue
+
+    try:
+        r = build_glue(install_dir=bfa, client_dir=client, out_dir=out, listfile=listfile, dbd_dir=dbd, patch=patch,
+                       on_log=lambda m: console.print(m, markup=False, highlight=False))
+    except (OSError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    for w in r.warnings:
+        console.print(f"  [yellow]warn[/] {w}", highlight=False)
+    console.print(f"  install steps: {os.path.join(out, 'INSTALL.txt')}")
+
+
+@app.command(name="outfits")
+def outfits_cmd(
+    client: str = typer.Option(..., "--client", help="Your 3.3.5a client folder (read only; the CharStartOutfit.dbc it loads is the base)."),
+    server_dbc: str = typer.Option(..., "--server-dbc", help="The server's DBC folder (read only)."),
+    out: str = typer.Option(..., "--out", help="Output folder (client\\, server\\, package.json, INSTALL.txt)."),
+    patch: str = typer.Option("patch-H.MPQ", "--patch", help="The folder patch the package installs into: the client "
+                              "is read as that patch sees it (a patch that outranks it, e.g. the retail backport "
+                              "kit's, is left out)."),
+) -> None:
+    """Start outfits of each race's own faction (an All Races All Classes Undead hunter gets the Horde's), every item showing its own display."""
+    from .race.outfits import OutfitsError, build_outfits
+
+    try:
+        r = build_outfits(client_dir=client, server_dbc_dir=server_dbc, out_dir=out, patch=patch,
+                          on_log=lambda m: console.print(m, markup=False, highlight=False))
+    except (OSError, ValueError, OutfitsError) as exc:
+        console.print(f"[red]{exc}[/]")
+        raise typer.Exit(code=2)
+    for side, changes in r.changes.items():
+        for c in changes:
+            console.print(f"  {side}: {c}", highlight=False)
+    console.print(f"  install steps: {os.path.join(out, 'INSTALL.txt')}")
+
+
 @app.command(name="install")
 def install_cmd(
-    package: str = typer.Argument(..., help="A `race` output folder (has race.json)."),
+    package: str = typer.Argument(..., help="A `race` or `glue` output folder (race.json / package.json)."),
     client: str = typer.Option("", "--client", help="Your 3.3.5a client folder."),
     patch: str = typer.Option("patch-H.MPQ", "--patch", help="The folder patch under Data\\ to install into."),
     server_dbc: str = typer.Option("", "--server-dbc", help="The server's DBC folder."),
-    clean: bool = typer.Option(False, "--clean", help="Also move leftover files in the race's folder to the backup."),
+    clean: bool = typer.Option(False, "--clean", help="Also move leftover files in the package's folders to the backup."),
     apply: bool = typer.Option(False, "--apply", help="Actually copy (default: show the plan only)."),
 ) -> None:
-    """Install a race package without overwriting anything you customized since the build."""
+    """Install a race or glue package without overwriting anything you customized since the build."""
     from .race.install import apply_install, plan_install
 
     try:
@@ -812,10 +889,20 @@ def install_cmd(
                       highlight=False)
     leftovers = [a for a in plan.actions if a.kind == "leftover"]
     if leftovers:
-        console.print(f"  [yellow]{len(leftovers)} leftover file(s)[/] in the race folder that the package doesn't "
+        console.print(f"  [yellow]{len(leftovers)} leftover file(s)[/] in the package's folders that it doesn't "
                       f"contain (e.g. {leftovers[0].target}) - "
                       + ("they will be moved to the backup" if clean else "kept; --clean moves them to the backup"),
                       highlight=False)
+    if plan.shadowed:
+        by: dict[str, list[str]] = {}
+        for rel, higher in plan.shadowed.items():
+            by.setdefault(higher, []).append(rel)
+        for higher, rels in sorted(by.items()):
+            console.print(f"  [yellow]{len(rels)} file(s) shadowed[/] by {higher}, which outranks {patch} "
+                          f"(e.g. {rels[0]}): the client loads that patch's copy, so these changes show only "
+                          "once it is rebuilt on top of this install (the retail backport kit: take its patch out "
+                          "of Data, bp.py scan, tables, audit, prove-gates, pack, put the new one back)",
+                          highlight=False)
     console.print(f"\nplan: {counts}")
     if plan.blocked:
         console.print(f"[red]{len(plan.blocked)} file(s) block the install - nothing was copied.[/]")
@@ -838,6 +925,41 @@ def uninstall_cmd(receipt: str = typer.Argument(..., help="An installs\\<time>.j
     except (OSError, ValueError) as exc:
         console.print(f"[red]{exc}[/]")
         raise typer.Exit(code=2)
+
+
+@app.command(name="workbench")
+def workbench_cmd(
+    bfa: str = typer.Option("", "--bfa", help="A local BfA (8.x) install to browse."),
+    retail: str = typer.Option("", "--retail", help="A local retail install to browse (a partial one fetches "
+                               "what it does not store from Blizzard's CDN, kept in the workbench cache)."),
+    client: str = typer.Option("", "--client", help="Your 3.3.5a client: items it already has are marked."),
+    dbd: str = typer.Option("", "--dbd", help="WoWDBDefs 'definitions' folder."),
+    listfile: str = typer.Option("", "--listfile", help="Community listfile.csv."),
+    data: str = typer.Option("", "--data", help="Where the workbench keeps its cache and basket "
+                             "(default %USERPROFILE%\\.retroport\\workbench)."),
+    port: int = typer.Option(8335, "--port"),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open the page in your browser."),
+) -> None:
+    """Browse and pick items and sets - retail's from wago.tools, or from your own installs.
+
+    Without --retail / --bfa, retail's items and BfA's bodies (for the character view) come from
+    wago.tools.
+
+    Options given are remembered (%USERPROFILE%\\.retroport\\workbench.json): later runs need none."""
+    from .workbench.server import Settings, serve
+
+    s = Settings.load()
+    if bfa:
+        s.set_source("bfa", "BfA", os.path.abspath(bfa))
+    if retail:
+        s.set_source("retail", "Retail", os.path.abspath(retail), product="wow", cdn=True)
+    for name, value in (("client", client), ("dbd", dbd), ("listfile", listfile), ("data", data)):
+        if value:
+            setattr(s, name, os.path.abspath(value))
+    s.save()
+    for p in s.problems():
+        console.print(f"[yellow]warn[/] {p}", highlight=False)
+    serve(s, port=port, open_browser=not no_browser, log=lambda m: console.print(m, highlight=False))
 
 
 def main() -> None:

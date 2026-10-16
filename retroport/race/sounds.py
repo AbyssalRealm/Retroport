@@ -36,6 +36,7 @@ from ..safeio import write_verified
 
 SEXES = ("Male", "Female")
 MAX_FILES = 10                                  # SoundEntries.File[10]
+ID_BLOCKS = 200000                              # racials.BLOCK_BASE: ids from here are the races' blocks
 # 3.3.5 CreatureSoundData column -> (BfA field, array index): every column that holds a sound
 CSD_KIT_COLUMNS: dict[int, tuple[str, int | None]] = {
     1: ("SoundExertionID", None), 2: ("SoundExertionCriticalID", None), 3: ("SoundInjuryID", None),
@@ -100,6 +101,21 @@ def listfile_names(listfile: str, fdids: set[int]) -> dict[int, str]:
     return found
 
 
+def race_displays(table: Table, race_id: int, race: dict) -> dict[int, int]:
+    """sex -> the race's player display: BfA's ChrRaces columns, or on retail (which moved them
+    to ChrModel) its ChrRaceXChrModel models' displays."""
+    out = {sex: int(race.get(key, 0) or 0) for sex, key in enumerate(("MaleDisplayID", "FemaleDisplayID"))}
+    if not any(out.values()):
+        try:
+            models = dict(table("ChrModel"))
+            for _i, r in table("ChrRaceXChrModel"):
+                if r["ChrRacesID"] == race_id and r["Sex"] in out:
+                    out[r["Sex"]] = int(models.get(r["ChrModelID"], {}).get("DisplayID", 0))
+        except (ValueError, KeyError):
+            pass
+    return out
+
+
 def collect_voice(table: Table, race_id: int, cfs: str, *, emotes: set[int], vocal_enums: set[int],
                   names: Callable[[set[int]], dict[int, str]]) -> Voice:
     """Read a BfA race's voice. ``emotes`` / ``vocal_enums``: what the 3.3.5 client knows;
@@ -147,12 +163,12 @@ def collect_voice(table: Table, race_id: int, cfs: str, *, emotes: set[int], voc
     if race is None:
         raise DBCError(f"race {race_id} is not in BfA's ChrRaces")
     cdi, cmd, csd = dict(table("CreatureDisplayInfo")), dict(table("CreatureModelData")), dict(table("CreatureSoundData"))
-    for sex, key in enumerate(("MaleDisplayID", "FemaleDisplayID")):
-        display = cdi.get(race.get(key, 0))
+    for sex, display_id in race_displays(table, race_id, race).items():
+        display = cdi.get(display_id)
         sid = display and (display.get("SoundID") or cmd.get(display["ModelID"], {}).get("SoundID"))
         row = csd.get(sid) if sid else None
         if row is None:
-            voice.skipped.append(f"{SEXES[sex].lower()} combat sounds: BfA display {race.get(key)} has none")
+            voice.skipped.append(f"{SEXES[sex].lower()} combat sounds: BfA display {display_id} has none")
             continue
         cols = {}
         for col, (fname, idx) in CSD_KIT_COLUMNS.items():
@@ -205,8 +221,9 @@ def write_voice_files(read: Callable[[int], bytes], voice: Voice, client_out: st
 
 
 def assign_ids(voice: Voice, sound_entries: DBCFile, creature_sounds: DBCFile) -> tuple[dict[int, int], dict[int, int]]:
-    """New SoundEntries ids per kit and CreatureSoundData ids per sex, above each table's maximum."""
-    start = sound_entries.max_id() + 1
+    """New SoundEntries ids per kit and CreatureSoundData ids per sex, above each table's maximum -
+    below the races' own id blocks (racials.BLOCK_BASE: their spells' sounds), which they'd run into."""
+    start = max((r[0] for r in sound_entries.records if r[0] < ID_BLOCKS), default=0) + 1
     sounds = {kit: start + i for i, kit in enumerate(sorted(voice.kits))}
     start = creature_sounds.max_id() + 1
     creature = {sex: start + i for i, sex in enumerate(sorted(voice.creature))}

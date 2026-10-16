@@ -1,0 +1,1115 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.blizzard.com/wow/ui/
+..\FrameXML\UI.xsd">
+	<!-- Character create laid out as Battle for Azeroth's (retroport glue package). Sizes, offsets and
+	     texture coordinates are BfA 8.3's CharacterCreate.xml; the at-sign ATLAS / COORDS placeholders are
+	     BfA atlas pieces, filled in by the build from UiTextureAtlasMember (3.3.5 has no atlases). -->
+	<Script file="CharacterCreate.lua"/>
+	<Font name="CharCreateFactionNameLarge" inherits="FactionName_Shadow_Huge" virtual="true">
+		<FontHeight>
+			<AbsValue val="16"/>
+		</FontHeight>
+	</Font>
+	<Frame name="CharacterCreateTooltip" frameStrata="TOOLTIP" hidden="true" parent="GlueParent" inherits="GlueTooltipTemplate">
+		<Scripts>
+			<OnLoad>
+				GlueTooltip_SetFont(self, CharacterCreateTooltipFont);
+				self:SetBackdropBorderColor(1.0, 1.0, 1.0);
+				self:SetBackdropColor(0.09, 0.09, 0.19);
+			</OnLoad>
+		</Scripts>
+	</Frame>
+
+	<!-- BfA's CharCreateResizablePanelTemplate: a faction-tinted dark gradient in a metal frame with
+	     filigree corners -->
+	<Frame name="CharCreatePanelTemplate" virtual="true">
+		<Layers>
+			<Layer level="BACKGROUND">
+				<Texture name="$parentFactionBg">
+					<Anchors>
+						<Anchor point="TOPLEFT" x="8" y="-10"/>
+						<Anchor point="BOTTOMRIGHT" x="-8" y="10"/>
+					</Anchors>
+					<Color r="1" g="1" b="1" a="0.75"/>
+					<Gradient orientation="VERTICAL">
+						<MinColor r="0" g="0" b="0"/>
+						<MaxColor r="0.2" g="0" b="0"/>
+					</Gradient>
+				</Texture>
+			</Layer>
+			<Layer level="BORDER">
+				<Texture name="$parentTopEdge" file="@ATLAS:ui-charactercreate-metalframe-horizontal@">
+					<Size x="11" y="11"/>
+					<Anchors>
+						<Anchor point="TOPLEFT" x="31" y="-6"/>
+						<Anchor point="TOPRIGHT" x="-31" y="-6"/>
+					</Anchors>
+					<TexCoords @COORDS:ui-charactercreate-metalframe-horizontal@/>
+				</Texture>
+				<Texture name="$parentBottomEdge" file="@ATLAS:ui-charactercreate-metalframe-horizontal@">
+					<Size x="11" y="11"/>
+					<Anchors>
+						<Anchor point="BOTTOMLEFT" x="31" y="6"/>
+						<Anchor point="BOTTOMRIGHT" x="-31" y="6"/>
+					</Anchors>
+					<TexCoords @COORDS:ui-charactercreate-metalframe-horizontal@/>
+				</Texture>
+				<Texture name="$parentLeftEdge" file="@ATLAS:ui-charactercreate-metalframe-vertical@">
+					<Size x="11" y="11"/>
+					<Anchors>
+						<Anchor point="TOPLEFT" x="6" y="-24"/>
+						<Anchor point="BOTTOMLEFT" x="6" y="24"/>
+					</Anchors>
+					<TexCoords @COORDS:ui-charactercreate-metalframe-vertical@/>
+				</Texture>
+				<Texture name="$parentRightEdge" file="@ATLAS:ui-charactercreate-metalframe-vertical@">
+					<Size x="11" y="11"/>
+					<Anchors>
+						<Anchor point="TOPRIGHT" x="-6" y="-24"/>
+						<Anchor point="BOTTOMRIGHT" x="-6" y="24"/>
+					</Anchors>
+					<TexCoords @COORDS:ui-charactercreate-metalframe-vertical@/>
+				</Texture>
+			</Layer>
+			<Layer level="ARTWORK">
+				<Texture name="$parentTopLeftCorner" file="@ATLAS:ui-charactercreate-metal-finery-corner@">
+					<Size x="56" y="49"/>
+					<Anchors>
+						<Anchor point="TOPLEFT"/>
+					</Anchors>
+					<TexCoords @COORDS:ui-charactercreate-metal-finery-corner@/>
+				</Texture>
+				<Texture name="$parentTopRightCorner" file="@ATLAS:ui-charactercreate-metal-finery-corner@">
+					<Size x="56" y="49"/>
+					<Anchors>
+						<Anchor point="TOPRIGHT"/>
+					</Anchors>
+					<TexCoords @COORDS_H:ui-charactercreate-metal-finery-corner@/>
+				</Texture>
+				<Texture name="$parentBottomLeftCorner" file="@ATLAS:ui-charactercreate-metal-finery-corner@">
+					<Size x="56" y="49"/>
+					<Anchors>
+						<Anchor point="BOTTOMLEFT"/>
+					</Anchors>
+					<TexCoords @COORDS_V:ui-charactercreate-metal-finery-corner@/>
+				</Texture>
+				<Texture name="$parentBottomRightCorner" file="@ATLAS:ui-charactercreate-metal-finery-corner@">
+					<Size x="56" y="49"/>
+					<Anchors>
+						<Anchor point="BOTTOMRIGHT"/>
+					</Anchors>
+					<TexCoords @COORDS_HV:ui-charactercreate-metal-finery-corner@/>
+				</Texture>
+			</Layer>
+		</Layers>
+	</Frame>
+
+	<!-- race button (BfA's CharCreateIconButtonTemplate + CharCreateRaceButtonTemplate), 44 units
+	     where BfA's is 50: its 64-pixel icon art stretched soft at 1440p -->
+	<CheckButton name="CharCreateRaceButtonTemplate" virtual="true" motionScriptsWhileDisabled="true" hidden="true">
+		<Size x="44" y="44"/>
+		<Layers>
+			<Layer level="BACKGROUND">
+				<Texture name="$parentShadow" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+					<Size x="60" y="60"/>
+					<Anchors>
+						<Anchor point="CENTER" x="0" y="0"/>
+					</Anchors>
+					<TexCoords left="0.41601563" right="0.54101563" top="0.53710938" bottom="0.59960938"/>
+				</Texture>
+			</Layer>
+			<Layer level="OVERLAY">
+				<Texture name="$parentBevelEdge" file="Interface\Glues\CharacterCreate\UI-CharacterCreate-Highlights">
+					<Size x="44" y="44"/>
+					<Anchors>
+						<Anchor point="CENTER" x="0" y="0"/>
+					</Anchors>
+					<TexCoords left="0" right="0.5" top="0.5" bottom="1.0"/>
+				</Texture>
+				<Texture name="$parentDisableTexture" hidden="true">
+					<Size x="44" y="44"/>
+					<Anchors>
+						<Anchor point="CENTER" x="0" y="0"/>
+					</Anchors>
+					<Color r="0.0" g="0.0" b="0.0" a="0.75"/>
+				</Texture>
+			</Layer>
+		</Layers>
+		<Frames>
+			<Frame name="$parentNameFrame">
+				<Size x="56" y="56"/>
+				<Anchors>
+					<Anchor point="BOTTOM"/>
+				</Anchors>
+				<Layers>
+					<Layer level="BACKGROUND">
+						<Texture name="$parentShadow" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+							<Size x="89" y="49"/>
+							<Anchors>
+								<Anchor point="BOTTOM" x="2" y="-30"/>
+							</Anchors>
+							<TexCoords left="0.63476563" right="0.80859375" top="0.43359375" bottom="0.48144531"/>
+						</Texture>
+					</Layer>
+					<Layer level="ARTWORK">
+						<FontString name="$parentText" inherits="GlueFontNormalSmall">
+							<Size x="90" y="12"/>
+							<Anchors>
+								<Anchor point="BOTTOM" x="2" y="-10"/>
+							</Anchors>
+						</FontString>
+					</Layer>
+				</Layers>
+			</Frame>
+		</Frames>
+		<Scripts>
+			<OnMouseDown>
+				if ( self:IsEnabled() ) then
+					_G[self:GetName().."BevelEdge"]:SetPoint("CENTER", self, "CENTER", 2, -2);
+					_G[self:GetName().."Shadow"]:SetWidth(62);
+					_G[self:GetName().."Shadow"]:SetHeight(62);
+				end
+			</OnMouseDown>
+			<OnMouseUp>
+				if ( self:IsEnabled() ) then
+					_G[self:GetName().."BevelEdge"]:SetPoint("CENTER", self, "CENTER", 0, 0);
+					_G[self:GetName().."Shadow"]:SetWidth(60);
+					_G[self:GetName().."Shadow"]:SetHeight(60);
+				end
+			</OnMouseUp>
+			<OnClick>
+				if ( self.enable ) then
+					CharacterRace_OnClick(self, self:GetID());
+				else
+					self:SetChecked(self:GetID() == CharacterCreate.selectedRace and 1 or nil);
+				end
+				CharacterCreate_HideTooltip();
+			</OnClick>
+			<OnEnter>
+				CharCreateRaceButton_OnEnter(self);
+			</OnEnter>
+			<OnLeave>
+				CharacterCreate_HideTooltip();
+			</OnLeave>
+		</Scripts>
+		<NormalTexture name="$parentNormalTexture" file="Interface\Glues\CharacterCreate\UI-CharacterCreate-Races"/>
+		<PushedTexture name="$parentPushedTexture" file="Interface\Glues\CharacterCreate\UI-CharacterCreate-Races">
+			<Size x="44" y="44"/>
+			<Anchors>
+				<Anchor point="CENTER" x="2" y="-2"/>
+			</Anchors>
+		</PushedTexture>
+		<HighlightTexture file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk" alphaMode="ADD">
+			<Size x="56" y="56"/>
+			<Anchors>
+				<Anchor point="CENTER" x="1" y="-1"/>
+			</Anchors>
+			<TexCoords left="0.79296875" right="0.95312500" top="0.08300781" bottom="0.16308594"/>
+		</HighlightTexture>
+		<CheckedTexture file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk" alphaMode="ADD">
+			<Size x="56" y="56"/>
+			<Anchors>
+				<Anchor point="CENTER" x="1" y="-1"/>
+			</Anchors>
+			<TexCoords left="0.79296875" right="0.95312500" top="0.00097656" bottom="0.08105469"/>
+		</CheckedTexture>
+	</CheckButton>
+
+	<!-- class button (BfA's CharCreateClassButtonTemplate) -->
+	<CheckButton name="CharCreateClassButtonTemplate" virtual="true" motionScriptsWhileDisabled="true" hidden="true">
+		<Size x="40" y="40"/>
+		<Layers>
+			<Layer level="BACKGROUND">
+				<Texture name="$parentShadow" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+					<Size x="60" y="60"/>
+					<Anchors>
+						<Anchor point="CENTER" x="0" y="0"/>
+					</Anchors>
+					<TexCoords left="0.41601563" right="0.54101563" top="0.53710938" bottom="0.59960938"/>
+				</Texture>
+			</Layer>
+			<Layer level="OVERLAY">
+				<Texture name="$parentDisableTexture" hidden="true">
+					<Size x="44" y="44"/>
+					<Anchors>
+						<Anchor point="CENTER" x="0" y="0"/>
+					</Anchors>
+					<Color r="0.0" g="0.0" b="0.0" a="0.75"/>
+				</Texture>
+			</Layer>
+		</Layers>
+		<Frames>
+			<Frame name="$parentNameFrame">
+				<Size x="64" y="64"/>
+				<Anchors>
+					<Anchor point="BOTTOM"/>
+				</Anchors>
+				<Layers>
+					<Layer level="BACKGROUND">
+						<Texture name="$parentShadow" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+							<Size x="97" y="57"/>
+							<Anchors>
+								<Anchor point="BOTTOM" x="2" y="-31"/>
+							</Anchors>
+							<TexCoords left="0.63476563" right="0.80859375" top="0.43359375" bottom="0.48144531"/>
+						</Texture>
+					</Layer>
+					<Layer level="ARTWORK">
+						<FontString name="$parentText" inherits="GlueFontNormalSmall">
+							<Size x="110" y="12"/>
+							<Anchors>
+								<Anchor point="TOP" x="0" y="-59"/>
+							</Anchors>
+						</FontString>
+					</Layer>
+				</Layers>
+			</Frame>
+		</Frames>
+		<Scripts>
+			<OnMouseDown>
+				if ( self:IsEnabled() ) then
+					_G[self:GetName().."Shadow"]:SetWidth(63);
+					_G[self:GetName().."Shadow"]:SetHeight(63);
+				end
+			</OnMouseDown>
+			<OnMouseUp>
+				if ( self:IsEnabled() ) then
+					_G[self:GetName().."Shadow"]:SetWidth(60);
+					_G[self:GetName().."Shadow"]:SetHeight(60);
+				end
+			</OnMouseUp>
+			<OnClick>
+				if ( self.enable ) then
+					CharacterClass_OnClick(self:GetID());
+				else
+					self:SetChecked(self:GetID() == CharacterCreate.selectedClass and 1 or nil);
+				end
+				CharacterCreate_HideTooltip();
+			</OnClick>
+			<OnEnter>
+				CharCreateClassButton_OnEnter(self);
+			</OnEnter>
+			<OnLeave>
+				CharacterCreate_HideTooltip();
+			</OnLeave>
+		</Scripts>
+		<NormalTexture name="$parentNormalTexture" file="Interface\Glues\CharacterCreate\UI-CharacterCreate-Classes"/>
+		<PushedTexture name="$parentPushedTexture" file="Interface\Glues\CharacterCreate\UI-CharacterCreate-Classes">
+			<Size x="44" y="44"/>
+			<Anchors>
+				<Anchor point="CENTER" x="2" y="-2"/>
+			</Anchors>
+		</PushedTexture>
+		<HighlightTexture file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk" alphaMode="ADD">
+			<Size x="56" y="56"/>
+			<Anchors>
+				<Anchor point="CENTER" x="1" y="-1"/>
+			</Anchors>
+			<TexCoords left="0.79296875" right="0.95312500" top="0.08300781" bottom="0.16308594"/>
+		</HighlightTexture>
+		<CheckedTexture file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk" alphaMode="ADD">
+			<Size x="56" y="56"/>
+			<Anchors>
+				<Anchor point="CENTER" x="1" y="-1"/>
+			</Anchors>
+			<TexCoords left="0.79296875" right="0.95312500" top="0.00097656" bottom="0.08105469"/>
+		</CheckedTexture>
+	</CheckButton>
+
+	<!-- gender button (BfA's CharacterCreateGenderButtonTemplate) -->
+	<CheckButton name="CharCreateGenderButtonTemplate" virtual="true">
+		<Size x="38" y="38"/>
+		<Layers>
+			<Layer level="BACKGROUND">
+				<Texture name="$parentShadow" file="Interface\Glues\CharacterCreate\UI-CharacterCreate-IconShadow">
+					<Size x="58" y="58"/>
+					<Anchors>
+						<Anchor point="CENTER" x="0" y="0"/>
+					</Anchors>
+					<Color r="1.0" g="1.0" b="1.0" a="0.85"/>
+				</Texture>
+			</Layer>
+			<Layer level="OVERLAY">
+				<Texture name="$parentBevelEdge" file="Interface\Glues\CharacterCreate\UI-CharacterCreate-Highlights">
+					<Size x="38" y="38"/>
+					<Anchors>
+						<Anchor point="CENTER" x="0" y="0"/>
+					</Anchors>
+					<TexCoords left="0" right="0.5" top="0.5" bottom="1.0"/>
+				</Texture>
+			</Layer>
+		</Layers>
+		<Scripts>
+			<OnMouseDown>
+				_G[self:GetName().."BevelEdge"]:SetPoint("CENTER", self, "CENTER", 2, -2);
+			</OnMouseDown>
+			<OnMouseUp>
+				_G[self:GetName().."BevelEdge"]:SetPoint("CENTER", self, "CENTER", 0, 0);
+			</OnMouseUp>
+			<OnLeave>
+				CharacterCreate_HideTooltip();
+			</OnLeave>
+		</Scripts>
+		<NormalTexture name="$parentNormalTexture" file="Interface\Glues\CharacterCreate\UI-CharacterCreate-Gender"/>
+		<PushedTexture name="$parentPushedTexture" file="Interface\Glues\CharacterCreate\UI-CharacterCreate-Gender">
+			<Size x="38" y="38"/>
+			<Anchors>
+				<Anchor point="CENTER" x="2" y="-2"/>
+			</Anchors>
+		</PushedTexture>
+		<HighlightTexture file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk" alphaMode="ADD">
+			<Size x="50" y="50"/>
+			<Anchors>
+				<Anchor point="CENTER" x="1" y="-1"/>
+			</Anchors>
+			<TexCoords left="0.79296875" right="0.95312500" top="0.08300781" bottom="0.16308594"/>
+		</HighlightTexture>
+		<CheckedTexture file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk" alphaMode="ADD">
+			<Size x="50" y="50"/>
+			<Anchors>
+				<Anchor point="CENTER" x="1" y="-1"/>
+			</Anchors>
+			<TexCoords left="0.79296875" right="0.95312500" top="0.00097656" bottom="0.08105469"/>
+		</CheckedTexture>
+	</CheckButton>
+
+	<!-- BfA's CharCreateNavButtonTemplate: a glue button in a metal frame -->
+	<Button name="CharCreateNavButtonTemplate" inherits="GlueButtonTemplate" virtual="true">
+		<Size x="120" y="57"/>
+		<Layers>
+			<Layer level="OVERLAY">
+				<Texture name="$parentRightEdge" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+					<Size x="16" y="48"/>
+					<Anchors>
+						<Anchor point="RIGHT" x="-4" y="3"/>
+					</Anchors>
+					<TexCoords left="0.95703125" right="0.98828125" top="0.00097656" bottom="0.04785156"/>
+				</Texture>
+				<Texture name="$parentLeftEdge" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+					<Size x="16" y="48"/>
+					<Anchors>
+						<Anchor point="LEFT" x="4" y="3"/>
+					</Anchors>
+					<TexCoords left="0.95703125" right="0.98828125" top="0.08300781" bottom="0.12988281"/>
+				</Texture>
+				<Texture name="$parentTopEdge" file="Interface\Glues\CharacterCreate\ButtonFrame-Mid">
+					<Size x="16" y="32"/>
+					<Anchors>
+						<Anchor point="RIGHT" relativeTo="$parentRightEdge" relativePoint="LEFT" x="0" y="16"/>
+						<Anchor point="LEFT" relativeTo="$parentLeftEdge" relativePoint="RIGHT" x="0" y="16"/>
+					</Anchors>
+					<TexCoords left="0" right="1" top="0" bottom="0.5"/>
+				</Texture>
+				<Texture name="$parentBottomEdge" file="Interface\Glues\CharacterCreate\ButtonFrame-Mid">
+					<Size x="16" y="32"/>
+					<Anchors>
+						<Anchor point="RIGHT" relativeTo="$parentRightEdge" relativePoint="LEFT" x="0" y="-16"/>
+						<Anchor point="LEFT" relativeTo="$parentLeftEdge" relativePoint="RIGHT" x="0" y="-16"/>
+					</Anchors>
+					<TexCoords left="0" right="1" top="0.5" bottom="1"/>
+				</Texture>
+			</Layer>
+		</Layers>
+		<NormalTexture inherits="GluePanelButtonUpTexture">
+			<Anchors>
+				<Anchor point="TOPLEFT" x="9" y="-8"/>
+				<Anchor point="BOTTOMRIGHT" x="-9" y="2"/>
+			</Anchors>
+		</NormalTexture>
+		<PushedTexture inherits="GluePanelButtonDownTexture">
+			<Anchors>
+				<Anchor point="TOPLEFT" x="9" y="-8"/>
+				<Anchor point="BOTTOMRIGHT" x="-9" y="2"/>
+			</Anchors>
+		</PushedTexture>
+		<DisabledTexture inherits="GluePanelButtonDisabledTexture">
+			<Anchors>
+				<Anchor point="TOPLEFT" x="9" y="-8"/>
+				<Anchor point="BOTTOMRIGHT" x="-9" y="2"/>
+			</Anchors>
+		</DisabledTexture>
+		<HighlightTexture inherits="GluePanelButtonHighlightTexture" alphaMode="ADD">
+			<Anchors>
+				<Anchor point="TOPLEFT" x="9" y="-8"/>
+				<Anchor point="BOTTOMRIGHT" x="-9" y="2"/>
+			</Anchors>
+		</HighlightTexture>
+	</Button>
+
+	<!-- BfA's CharacterCreateInfoTemplate: a panel with a title bar and scrolling text -->
+	<Frame name="CharCreateInfoPanelTemplate" inherits="CharCreatePanelTemplate" virtual="true" hidden="true">
+		<Size x="243" y="250"/>
+		<Layers>
+			<Layer level="BORDER">
+				<Texture name="$parentHeaderTex">
+					<Size x="10" y="32"/>
+					<Anchors>
+						<Anchor point="TOPLEFT" x="6" y="-8"/>
+						<Anchor point="TOPRIGHT" x="-6" y="-8"/>
+					</Anchors>
+					<Color r="0" g="0" b="0" a="1"/>
+				</Texture>
+			</Layer>
+			<Layer level="OVERLAY">
+				<FontString name="$parentTitle" inherits="FactionName_Shadow_Huge" justifyH="LEFT">
+					<Size x="190" y="24"/>
+					<Anchors>
+						<Anchor point="LEFT" relativeTo="$parentHeaderTex" x="24" y="-2"/>
+					</Anchors>
+					<Color r="1" g="1" b="1"/>
+				</FontString>
+			</Layer>
+		</Layers>
+		<Frames>
+			<ScrollFrame name="$parentScrollFrame" inherits="GlueScrollFrameTemplate">
+				<Anchors>
+					<Anchor point="TOPLEFT" relativeTo="$parentHeaderTex" relativePoint="BOTTOMLEFT" x="11" y="-4"/>
+					<Anchor point="BOTTOMRIGHT" x="-38" y="24"/>
+				</Anchors>
+				<Scripts>
+					<OnLoad>
+						local scrollBar = _G[self:GetName().."ScrollBar"];
+						scrollBar:ClearAllPoints();
+						scrollBar:SetPoint("TOPLEFT", self, "TOPRIGHT", 11, -6);
+						scrollBar:SetPoint("BOTTOMLEFT", self, "BOTTOMRIGHT", 11, 12);
+						GlueScrollFrame_OnScrollRangeChanged(self, yrange);
+					</OnLoad>
+					<OnScrollRangeChanged>
+						GlueScrollFrame_OnScrollRangeChanged(self, yrange);
+					</OnScrollRangeChanged>
+				</Scripts>
+				<ScrollChild>
+					<Frame name="$parentScrollChild">
+						<Size x="190" y="10"/>
+						<Layers>
+							<Layer level="ARTWORK">
+								<FontString name="$parentBulletText" inherits="GlueFontNormalSmall" justifyH="LEFT">
+									<Size x="190" y="0"/>
+									<Anchors>
+										<Anchor point="TOPLEFT" x="0" y="-8"/>
+									</Anchors>
+								</FontString>
+								<FontString name="$parentInfoText" inherits="GlueFontCharacterCreate" justifyH="LEFT">
+									<Size x="190" y="0"/>
+									<Anchors>
+										<Anchor point="TOPLEFT" relativeTo="$parentBulletText" relativePoint="BOTTOMLEFT" x="0" y="-4"/>
+									</Anchors>
+								</FontString>
+							</Layer>
+						</Layers>
+					</Frame>
+				</ScrollChild>
+			</ScrollFrame>
+		</Frames>
+	</Frame>
+
+	<!-- a customization row: BfA's customization button art, its name, and 3.3.5's arrows (BfA picks
+	     a style from rendered previews 3.3.5 can't make) -->
+	<Frame name="CharCreateCustomizationRowTemplate" virtual="true">
+		<Size x="200" y="46"/>
+		<Layers>
+			<Layer level="BACKGROUND">
+				<Texture name="$parentBg" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+					<Size x="214" y="85"/>
+					<Anchors>
+						<Anchor point="CENTER" x="0" y="0"/>
+					</Anchors>
+					<TexCoords left="0.00195313" right="0.41992188" top="0.77343750" bottom="0.85644531"/>
+				</Texture>
+			</Layer>
+			<Layer level="ARTWORK">
+				<FontString name="$parentText" inherits="GlueFontNormal">
+					<Anchors>
+						<Anchor point="CENTER" x="0" y="0"/>
+					</Anchors>
+				</FontString>
+			</Layer>
+		</Layers>
+		<Frames>
+			<Button name="$parentLeftButton">
+				<Size x="32" y="32"/>
+				<Anchors>
+					<Anchor point="LEFT" x="2" y="0"/>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						CharacterCustomization_Left(self:GetParent():GetID());
+					</OnClick>
+				</Scripts>
+				<NormalTexture file="Interface\Glues\Common\Glue-LeftArrow-Button-Up"/>
+				<PushedTexture file="Interface\Glues\Common\Glue-LeftArrow-Button-Down"/>
+				<HighlightTexture file="Interface\Glues\Common\Glue-LeftArrow-Button-Highlight" alphaMode="ADD"/>
+			</Button>
+			<Button name="$parentRightButton">
+				<Size x="32" y="32"/>
+				<Anchors>
+					<Anchor point="RIGHT" x="-2" y="0"/>
+				</Anchors>
+				<Scripts>
+					<OnClick>
+						CharacterCustomization_Right(self:GetParent():GetID());
+					</OnClick>
+				</Scripts>
+				<NormalTexture file="Interface\Glues\Common\Glue-RightArrow-Button-Up"/>
+				<PushedTexture file="Interface\Glues\Common\Glue-RightArrow-Button-Down"/>
+				<HighlightTexture file="Interface\Glues\Common\Glue-RightArrow-Button-Highlight" alphaMode="ADD"/>
+			</Button>
+		</Frames>
+	</Frame>
+
+	<ModelFFX name="CharacterCreate" toplevel="true" parent="GlueParent" setAllPoints="true" enableKeyboard="true" hidden="true">
+		<Frames>
+			<Frame name="CharacterCreateFrame" setAllPoints="true" enableMouse="true">
+				<Frames>
+					<!-- the gender box, with the race banners hanging from it -->
+					<Frame name="CharCreateRaceFrame">
+						<Size x="243" y="104"/>
+						<Anchors>
+							<Anchor point="TOPLEFT" x="3" y="-3"/>
+						</Anchors>
+						<Layers>
+							<Layer level="BACKGROUND">
+								<Texture file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+									<Size x="143" y="48"/>
+									<Anchors>
+										<Anchor point="TOPLEFT" x="30" y="-83"/>
+									</Anchors>
+									<TexCoords left="0.42382813" right="0.703125" top="0.68847656" bottom="0.73535156"/>
+								</Texture>
+								<Texture file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+									<Size x="143" y="48"/>
+									<Anchors>
+										<Anchor point="TOPRIGHT" x="-30" y="-83"/>
+									</Anchors>
+									<TexCoords left="0.61914063" right="0.89843750" top="0.68847656" bottom="0.73535156"/>
+								</Texture>
+							</Layer>
+						</Layers>
+						<Frames>
+							<Frame name="CharCreateRaceButtonsFrame">
+								<Size x="243" y="680"/>
+								<Anchors>
+									<Anchor point="TOP" x="0" y="0"/>
+								</Anchors>
+								<Layers>
+									<Layer level="BACKGROUND">
+										<!-- BfA's banners without the classic page's Pandaren banner under them (3.3.5 has
+										     no neutral race); the screen sizes them to the page's races -->
+										<Texture name="$parentBanners" file="@ATLAS:alliedraces-alliancehordebanner@">
+											<Size x="188" y="478"/>
+											<Anchors>
+												<Anchor point="TOP" x="0" y="-96"/>
+											</Anchors>
+											<TexCoords @COORDS:alliedraces-alliancehordebanner@/>
+										</Texture>
+									</Layer>
+									<Layer level="BORDER">
+										<Texture name="$parentFineryLeft" file="@ATLAS:ui-charactercreate-metal-small-finery@">
+											<Size x="35" y="32"/>
+											<Anchors>
+												<Anchor point="TOPLEFT" x="30" y="-92"/>
+											</Anchors>
+											<TexCoords @COORDS:ui-charactercreate-metal-small-finery@/>
+										</Texture>
+										<Texture name="$parentFineryRight" file="@ATLAS:ui-charactercreate-metal-small-finery@">
+											<Size x="35" y="32"/>
+											<Anchors>
+												<Anchor point="TOPRIGHT" x="-30" y="-92"/>
+											</Anchors>
+											<TexCoords @COORDS_H:ui-charactercreate-metal-small-finery@/>
+										</Texture>
+									</Layer>
+									<Layer level="ARTWORK">
+										<FontString name="CharCreateAllianceLabel" inherits="CharCreateFactionNameLarge">
+											<Anchors>
+												<Anchor point="TOP" x="-41" y="-110"/>
+											</Anchors>
+											<Color r="1.0" g="0.82" b="0.0"/>
+										</FontString>
+										<FontString name="CharCreateHordeLabel" inherits="CharCreateFactionNameLarge">
+											<Anchors>
+												<Anchor point="TOP" x="45" y="-110"/>
+											</Anchors>
+											<Color r="1.0" g="0.82" b="0.0"/>
+										</FontString>
+									</Layer>
+								</Layers>
+							</Frame>
+							<Frame name="CharCreateRaceFramePanel" inherits="CharCreatePanelTemplate" setAllPoints="true">
+								<Layers>
+									<Layer level="OVERLAY">
+										<FontString name="CharCreateGenderLabel" inherits="FactionName_Shadow_Huge">
+											<Anchors>
+												<Anchor point="TOP" x="0" y="-21"/>
+											</Anchors>
+											<Color r="1.0" g="0.82" b="0.0"/>
+										</FontString>
+									</Layer>
+								</Layers>
+							</Frame>
+							<CheckButton name="CharacterCreateGenderButtonMale" inherits="CharCreateGenderButtonTemplate">
+								<Anchors>
+									<Anchor point="TOPLEFT" x="72" y="-45"/>
+								</Anchors>
+								<Scripts>
+									<OnLoad>
+										CharacterCreateGenderButtonMaleNormalTexture:SetTexCoord(0, 0.5, 0, 1.0);
+										CharacterCreateGenderButtonMalePushedTexture:SetTexCoord(0, 0.5, 0, 1.0);
+									</OnLoad>
+									<OnClick>
+										PlaySound("gsCharacterCreationClass");
+										if ( GetSelectedSex() ~= SEX_MALE ) then
+											SetCharacterGender(SEX_MALE);
+										else
+											self:SetChecked(1);
+										end
+									</OnClick>
+									<OnEnter>
+										CharacterCreate_ShowTooltip(self, MALE);
+									</OnEnter>
+								</Scripts>
+							</CheckButton>
+							<CheckButton name="CharacterCreateGenderButtonFemale" inherits="CharCreateGenderButtonTemplate">
+								<Anchors>
+									<Anchor point="TOPLEFT" x="132" y="-45"/>
+								</Anchors>
+								<Scripts>
+									<OnLoad>
+										CharacterCreateGenderButtonFemaleNormalTexture:SetTexCoord(0.5, 1.0, 0, 1.0);
+										CharacterCreateGenderButtonFemalePushedTexture:SetTexCoord(0.5, 1.0, 0, 1.0);
+									</OnLoad>
+									<OnClick>
+										PlaySound("gsCharacterCreationClass");
+										if ( GetSelectedSex() ~= SEX_FEMALE ) then
+											SetCharacterGender(SEX_FEMALE);
+										else
+											self:SetChecked(1);
+										end
+									</OnClick>
+									<OnEnter>
+										CharacterCreate_ShowTooltip(self, FEMALE);
+									</OnEnter>
+								</Scripts>
+							</CheckButton>
+						</Frames>
+					</Frame>
+					<Frame name="CharCreateRaceInfoFrame" inherits="CharCreateInfoPanelTemplate">
+						<Anchors>
+							<Anchor point="BOTTOMLEFT" relativeTo="CharCreateRaceFrame" relativePoint="BOTTOMRIGHT" x="-28" y="-607"/>
+						</Anchors>
+					</Frame>
+
+					<!-- the class column down the right edge -->
+					<Frame name="CharCreateClassFrame" inherits="CharCreatePanelTemplate">
+						<Size x="142" y="768"/>
+						<Anchors>
+							<Anchor point="TOPRIGHT" x="1" y="-3"/>
+							<Anchor point="BOTTOMRIGHT" x="1" y="3"/>
+						</Anchors>
+						<Layers>
+							<Layer level="OVERLAY">
+								<!-- BfA's title and icons sit 10 right of the column's middle: its panel runs on past
+								     the screen's edge; ours ends at the column's, so they sit on its middle -->
+								<FontString name="CharCreateClassLabel" inherits="FactionName_Shadow_Huge">
+									<Anchors>
+										<Anchor point="TOP" x="0" y="-21"/>
+									</Anchors>
+									<Color r="1.0" g="0.82" b="0.0"/>
+								</FontString>
+							</Layer>
+						</Layers>
+					</Frame>
+					<Frame name="CharCreateClassInfoFrame" inherits="CharCreateInfoPanelTemplate">
+						<Anchors>
+							<Anchor point="BOTTOMRIGHT" relativeTo="CharCreateClassFrame" relativePoint="BOTTOMLEFT" x="-1" y="51"/>
+						</Anchors>
+					</Frame>
+
+					<!-- the customization step: its box, with the options on a faction banner -->
+					<Frame name="CharCreateCustomizationFrame" inherits="CharCreatePanelTemplate" hidden="true">
+						<Size x="243" y="104"/>
+						<Anchors>
+							<Anchor point="TOPLEFT" x="3" y="-3"/>
+						</Anchors>
+						<Layers>
+							<Layer level="OVERLAY">
+								<FontString name="CharCreateCustomizationLabel" inherits="FactionName_Shadow_Huge">
+									<Anchors>
+										<Anchor point="TOP" x="0" y="-26"/>
+									</Anchors>
+									<Color r="1.0" g="0.82" b="0.0"/>
+								</FontString>
+							</Layer>
+						</Layers>
+						<Frames>
+							<Frame name="CharCreateCustomizationBanner">
+								<Size x="200" y="10"/>
+								<Anchors>
+									<Anchor point="TOP" relativePoint="BOTTOM" x="0" y="18"/>
+								</Anchors>
+								<Layers>
+									<Layer level="BACKGROUND">
+										<Texture name="$parentTop" file="@ATLAS:charactercreate-banner-top@">
+											<Size x="200" y="49"/>
+											<Anchors>
+												<Anchor point="TOP"/>
+											</Anchors>
+											<TexCoords @COORDS:charactercreate-banner-top@/>
+										</Texture>
+										<Texture name="$parentMiddle" file="@ATLAS:charactercreate-banner-middle@">
+											<Size x="200" y="210"/>
+											<Anchors>
+												<Anchor point="TOP" relativeTo="$parentTop" relativePoint="BOTTOM"/>
+											</Anchors>
+											<TexCoords @COORDS:charactercreate-banner-middle@/>
+										</Texture>
+										<Texture name="$parentBottom" file="@ATLAS:charactercreate-banner-bottom@">
+											<Size x="200" y="64"/>
+											<Anchors>
+												<Anchor point="TOP" relativeTo="$parentMiddle" relativePoint="BOTTOM"/>
+											</Anchors>
+											<TexCoords @COORDS:charactercreate-banner-bottom@/>
+										</Texture>
+									</Layer>
+								</Layers>
+							</Frame>
+							<Frame name="CharacterCustomizationButtonFrame1" inherits="CharCreateCustomizationRowTemplate" id="1">
+								<Anchors>
+									<Anchor point="TOP" x="0" y="-101"/>
+								</Anchors>
+							</Frame>
+							<Frame name="CharacterCustomizationButtonFrame2" inherits="CharCreateCustomizationRowTemplate" id="2">
+								<Anchors>
+									<Anchor point="TOP" relativeTo="CharacterCustomizationButtonFrame1" relativePoint="BOTTOM" x="0" y="0"/>
+								</Anchors>
+							</Frame>
+							<Frame name="CharacterCustomizationButtonFrame3" inherits="CharCreateCustomizationRowTemplate" id="3">
+								<Anchors>
+									<Anchor point="TOP" relativeTo="CharacterCustomizationButtonFrame2" relativePoint="BOTTOM" x="0" y="0"/>
+								</Anchors>
+							</Frame>
+							<Frame name="CharacterCustomizationButtonFrame4" inherits="CharCreateCustomizationRowTemplate" id="4">
+								<Anchors>
+									<Anchor point="TOP" relativeTo="CharacterCustomizationButtonFrame3" relativePoint="BOTTOM" x="0" y="0"/>
+								</Anchors>
+							</Frame>
+							<Frame name="CharacterCustomizationButtonFrame5" inherits="CharCreateCustomizationRowTemplate" id="5">
+								<Anchors>
+									<Anchor point="TOP" relativeTo="CharacterCustomizationButtonFrame4" relativePoint="BOTTOM" x="0" y="0"/>
+								</Anchors>
+							</Frame>
+							<Button name="CharCreateRandomizeButton" inherits="GlueButtonSmallTemplate" text="RANDOMIZE">
+								<Size x="146" y="34"/>
+								<Anchors>
+									<Anchor point="TOP" relativeTo="CharacterCustomizationButtonFrame5" relativePoint="BOTTOM" x="0" y="-16"/>
+								</Anchors>
+								<Scripts>
+									<OnClick>
+										CharacterCreate_Randomize();
+									</OnClick>
+									<OnUpdate>
+										CharacterCreate_DeathKnightSwap(self);
+									</OnUpdate>
+								</Scripts>
+							</Button>
+						</Frames>
+					</Frame>
+
+					<!-- bottom row: rotation, back / customize-finish, more info, the races page toggle -->
+					<Button name="CharacterCreateRotateLeft">
+						<Size x="50" y="50"/>
+						<Anchors>
+							<Anchor point="BOTTOM" x="-15" y="-1"/>
+						</Anchors>
+						<HitRectInsets>
+							<AbsInset left="13" right="13" top="10" bottom="13"/>
+						</HitRectInsets>
+						<Scripts>
+							<OnLoad>
+								self:RegisterForClicks("LeftButtonDown", "LeftButtonUp");
+							</OnLoad>
+							<OnClick>
+								PlaySound("igInventoryRotateCharacter");
+							</OnClick>
+							<OnUpdate>
+								CharacterCreateRotateLeft_OnUpdate(self);
+							</OnUpdate>
+						</Scripts>
+						<NormalTexture file="Interface\Glues\CharacterCreate\UI-RotationRight-Big-Up">
+							<TexCoords left="1.0" right="0" top="0" bottom="1.0"/>
+						</NormalTexture>
+						<PushedTexture file="Interface\Glues\CharacterCreate\UI-RotationRight-Big-Down">
+							<TexCoords left="1.0" right="0" top="0" bottom="1.0"/>
+						</PushedTexture>
+						<HighlightTexture file="Interface\Buttons\UI-Common-MouseHilight" alphaMode="ADD">
+							<Size x="30" y="30"/>
+							<Anchors>
+								<Anchor point="CENTER" x="0" y="0"/>
+							</Anchors>
+						</HighlightTexture>
+					</Button>
+					<Button name="CharacterCreateRotateRight">
+						<Size x="50" y="50"/>
+						<Anchors>
+							<Anchor point="LEFT" relativeTo="CharacterCreateRotateLeft" relativePoint="RIGHT" x="-19" y="0"/>
+						</Anchors>
+						<HitRectInsets>
+							<AbsInset left="13" right="13" top="10" bottom="13"/>
+						</HitRectInsets>
+						<Scripts>
+							<OnLoad>
+								self:RegisterForClicks("LeftButtonDown", "LeftButtonUp");
+							</OnLoad>
+							<OnClick>
+								PlaySound("igInventoryRotateCharacter");
+							</OnClick>
+							<OnUpdate>
+								CharacterCreateRotateRight_OnUpdate(self);
+							</OnUpdate>
+						</Scripts>
+						<NormalTexture file="Interface\Glues\CharacterCreate\UI-RotationRight-Big-Up"/>
+						<PushedTexture file="Interface\Glues\CharacterCreate\UI-RotationRight-Big-Down"/>
+						<HighlightTexture file="Interface\Buttons\UI-Common-MouseHilight" alphaMode="ADD">
+							<Size x="30" y="30"/>
+							<Anchors>
+								<Anchor point="CENTER" x="0" y="0"/>
+							</Anchors>
+						</HighlightTexture>
+					</Button>
+					<Button name="CharCreateBackButton" inherits="CharCreateNavButtonTemplate" text="BACK">
+						<Anchors>
+							<Anchor point="BOTTOM" x="-132" y="-6"/>
+						</Anchors>
+						<!-- BfA draws this on OVERLAY sublevel 1, over the template's edges (OVERLAY). 3.3.5 has no
+						     sublevels and draws one layer's textures in no fixed order - the arrow went under the
+						     edge and back as the name's cursor blinked - so it sits on a frame of its own, which
+						     3.3.5 always draws over the button -->
+						<Frames>
+							<Frame name="$parentFront" setAllPoints="true">
+								<Layers>
+									<Layer level="OVERLAY">
+										<Texture name="CharCreateBackButtonArrow" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+											<Size x="33" y="44"/>
+											<Anchors>
+												<Anchor point="LEFT" x="-9" y="3"/>
+											</Anchors>
+											<TexCoords left="0.54492188" right="0.60937500" top="0.53710938" bottom="0.58007813"/>
+										</Texture>
+									</Layer>
+								</Layers>
+							</Frame>
+						</Frames>
+						<Scripts>
+							<OnClick>
+								CharacterCreate_Back();
+							</OnClick>
+							<OnUpdate>
+								CharacterCreate_DeathKnightSwap(self);
+							</OnUpdate>
+						</Scripts>
+					</Button>
+					<Button name="CharCreateOkayButton" inherits="CharCreateNavButtonTemplate">
+						<Anchors>
+							<Anchor point="BOTTOM" x="137" y="-6"/>
+						</Anchors>
+						<!-- over the template's edges, as the Back button's arrow -->
+						<Frames>
+							<Frame name="$parentFront" setAllPoints="true">
+								<Layers>
+									<Layer level="OVERLAY">
+										<Texture name="CharCreateOkayButtonTopGlow" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk" hidden="true">
+											<Size x="117" y="32"/>
+											<Anchors>
+												<Anchor point="TOP" x="0" y="18"/>
+											</Anchors>
+											<TexCoords left="0.18750000" right="0.41601563" top="0.89257813" bottom="0.92382813"/>
+										</Texture>
+										<Texture name="CharCreateOkayButtonBottomGlow" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk" hidden="true">
+											<Size x="117" y="32"/>
+											<Anchors>
+												<Anchor point="BOTTOM" x="0" y="-13"/>
+											</Anchors>
+											<TexCoords left="0.18750000" right="0.41601563" top="0.92382813" bottom="0.89257813"/>
+										</Texture>
+										<Texture name="CharCreateOkayButtonArrow" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+											<Size x="33" y="44"/>
+											<Anchors>
+												<Anchor point="RIGHT" x="10" y="3"/>
+											</Anchors>
+											<TexCoords left="0.81250000" right="0.87695313" top="0.43359375" bottom="0.47656250"/>
+										</Texture>
+									</Layer>
+								</Layers>
+							</Frame>
+						</Frames>
+						<Scripts>
+							<OnClick>
+								CharacterCreate_Forward();
+							</OnClick>
+							<OnUpdate>
+								CharacterCreate_DeathKnightSwap(self);
+							</OnUpdate>
+						</Scripts>
+					</Button>
+					<Button name="CharCreateMoreInfoButton" inherits="CharCreateNavButtonTemplate">
+						<Size x="180" y="62"/>
+						<Anchors>
+							<Anchor point="BOTTOMRIGHT" x="-146" y="-5"/>
+						</Anchors>
+						<!-- the glows over the template's edges, as the Back button's arrow -->
+						<Frames>
+							<Frame name="$parentFront" setAllPoints="true">
+								<Layers>
+									<Layer level="OVERLAY">
+										<Texture name="CharCreateMoreInfoButtonTopGlow" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk" hidden="true">
+											<Size x="117" y="32"/>
+											<Anchors>
+												<Anchor point="TOP" x="0" y="18"/>
+											</Anchors>
+											<TexCoords left="0.18750000" right="0.41601563" top="0.89257813" bottom="0.92382813"/>
+										</Texture>
+										<Texture name="CharCreateMoreInfoButtonBottomGlow" file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk" hidden="true">
+											<Size x="117" y="32"/>
+											<Anchors>
+												<Anchor point="BOTTOM" x="0" y="-13"/>
+											</Anchors>
+											<TexCoords left="0.18750000" right="0.41601563" top="0.92382813" bottom="0.89257813"/>
+										</Texture>
+									</Layer>
+								</Layers>
+							</Frame>
+						</Frames>
+						<Scripts>
+							<OnClick>
+								CharacterCreate_ToggleMoreInfo();
+							</OnClick>
+						</Scripts>
+					</Button>
+					<Button name="CharCreateAlliedRacesButton" inherits="CharCreateNavButtonTemplate" hidden="true">
+						<Size x="180" y="62"/>
+						<Anchors>
+							<Anchor point="BOTTOMLEFT" x="34" y="-6"/>
+						</Anchors>
+						<Scripts>
+							<OnClick>
+								CharacterCreate_ShowRacePage(true);
+							</OnClick>
+						</Scripts>
+					</Button>
+					<Button name="CharCreateCoreRacesButton" inherits="CharCreateNavButtonTemplate" hidden="true">
+						<Size x="180" y="62"/>
+						<Anchors>
+							<Anchor point="BOTTOMLEFT" x="34" y="-6"/>
+						</Anchors>
+						<Scripts>
+							<OnClick>
+								CharacterCreate_ShowRacePage(nil);
+							</OnClick>
+						</Scripts>
+					</Button>
+
+					<!-- the name, in the customization step -->
+					<EditBox name="CharacterCreateNameEdit" letters="12" hidden="true">
+						<Size x="156" y="40"/>
+						<Anchors>
+							<Anchor point="BOTTOM" x="0" y="64"/>
+						</Anchors>
+						<Layers>
+							<Layer level="BORDER">
+								<Texture file="Interface\Glues\CharacterCreate\UI-CharacterCreatePatchwerk">
+									<Size x="117" y="32"/>
+									<Anchors>
+										<Anchor point="BOTTOM" relativePoint="TOP" x="0" y="-3"/>
+									</Anchors>
+									<TexCoords left="0.18750000" right="0.41601563" top="0.89257813" bottom="0.92382813"/>
+								</Texture>
+							</Layer>
+							<Layer level="ARTWORK">
+								<FontString name="CharacterCreateNameEditTitle" inherits="FactionName_Shadow_Huge">
+									<Size x="256" y="64"/>
+									<Anchors>
+										<Anchor point="BOTTOM" relativePoint="TOP" x="0" y="-23"/>
+									</Anchors>
+								</FontString>
+							</Layer>
+						</Layers>
+						<Backdrop bgFile="Interface\Tooltips\UI-Tooltip-Background" edgeFile="Interface\Glues\Common\Glue-Tooltip-Border" tile="true">
+							<BackgroundInsets>
+								<AbsInset left="10" right="5" top="4" bottom="9"/>
+							</BackgroundInsets>
+							<TileSize>
+								<AbsValue val="16"/>
+							</TileSize>
+							<EdgeSize>
+								<AbsValue val="16"/>
+							</EdgeSize>
+						</Backdrop>
+						<Scripts>
+							<OnTextChanged>
+								CharacterCreate_UpdateOkayGlow();
+							</OnTextChanged>
+							<OnEscapePressed>
+								CharacterCreate_Back();
+							</OnEscapePressed>
+							<OnEnterPressed>
+								CharacterCreate_Forward();
+							</OnEnterPressed>
+						</Scripts>
+						<FontString inherits="GlueEditBoxFont"/>
+						<TextInsets>
+							<AbsInset left="15"/>
+						</TextInsets>
+					</EditBox>
+					<Button name="CharacterCreateRandomName" inherits="GlueButtonSmallTemplate" text="RANDOMIZE" hidden="true">
+						<Size x="146" y="30"/>
+						<Anchors>
+							<Anchor point="TOP" relativeTo="CharacterCreateNameEdit" relativePoint="BOTTOM" x="0" y="6"/>
+						</Anchors>
+						<Scripts>
+							<OnLoad>
+								self:SetWidth(self:GetTextWidth() + 50);
+							</OnLoad>
+							<OnClick>
+								CharacterCreateNameEdit:SetText(GetRandomName());
+								PlaySound("gsCharacterCreationLook");
+							</OnClick>
+							<OnUpdate>
+								CharacterCreate_DeathKnightSwap(self);
+							</OnUpdate>
+						</Scripts>
+					</Button>
+				</Frames>
+				<Scripts>
+					<OnMouseDown>
+						CharacterCreateFrame_OnMouseDown(button);
+					</OnMouseDown>
+					<OnMouseUp>
+						CharacterCreateFrame_OnMouseUp(button);
+					</OnMouseUp>
+					<OnUpdate>
+						CharacterCreateFrame_OnUpdate(self, elapsed);
+					</OnUpdate>
+				</Scripts>
+			</Frame>
+		</Frames>
+		<Scripts>
+			<OnLoad>
+				CharacterCreate_OnLoad(self);
+			</OnLoad>
+			<OnShow>
+				CharacterCreate_OnShow();
+			</OnShow>
+			<OnHide>
+				CharacterCreate_OnHide();
+			</OnHide>
+			<OnChar>
+				CharacterCreate_OnChar();
+			</OnChar>
+			<OnKeyDown>
+				CharacterCreate_OnKeyDown(key);
+			</OnKeyDown>
+			<OnUpdateModel>
+				CharacterCreate_UpdateModel(self);
+			</OnUpdateModel>
+		</Scripts>
+	</ModelFFX>
+</Ui>

@@ -1,5 +1,6 @@
 """retroport race: MPQ priority, race DBC edits (and their removal), GlueXML patches, icon splice, SQL."""
 
+import itertools
 import struct
 
 import pytest
@@ -11,7 +12,8 @@ from retroport.mpq import _patch_rank, hash_string
 from retroport.race import glue, icons
 from retroport.race.build import _apply
 from retroport.race.sql import race_sql
-from retroport.race.tables import ALLIANCE, HORDE, RaceSpec, race_bit, strip_race
+from retroport.race.tables import (ALLIANCE, HORDE, RaceSpec, add_helmet_vis_race, clone_start_outfits, race_bit,
+                                   strip_race)
 
 
 def test_mpq_hashes_and_patch_order():
@@ -66,9 +68,13 @@ def _tables():
     emotes.add_record([2, 10, 2, 0, 600])
     cs, hg, fh = DBCFile(10), DBCFile(6), DBCFile(8)
     cs.add_record([1, 1, 0, 0, 0, 0, 0, 1, 0, 0])
+    hgv = DBCFile(8)                                              # masks are 1 << race (Human 1 << 1)
+    hgv.add_record([305, 0x0DBE, 0, 0, 0x88C, 0x40, 0, 0])        # hair for every race but Tauren; Human ears stay
+    hgv.add_record([306, 0x0DBE, 0x5DE, 0xDFE, 0x4DE, 0xCEE, 0, 0])
     return {"ChrRaces": _chr_races(), "CreatureModelData": cmd, "CreatureDisplayInfo": cdi, "CharBaseInfo": base,
             "CharStartOutfit": outfit, "SkillRaceClassInfo": srci, "SkillLineAbility": sla, "Faction": fac,
-            "EmotesTextSound": emotes, "CharSections": cs, "CharHairGeosets": hg, "CharacterFacialHairStyles": fh}
+            "EmotesTextSound": emotes, "CharSections": cs, "CharHairGeosets": hg, "CharacterFacialHairStyles": fh,
+            "HelmetGeosetVisData": hgv}
 
 
 class _Char:
@@ -107,6 +113,10 @@ def test_apply_adds_both_factions_and_strip_undoes_it():
     assert sorted(r[2] for r in t["EmotesTextSound"].records) == [1, 2, 22, 23]       # voices from the look template
     assert [r[1] for r in t["CharSections"].records].count(22) == 1
     assert t["CharacterFacialHairStyles"].records[-1][3:] == [0, 0, 0, 0, 0]
+    hgv = {r[0]: r for r in t["HelmetGeosetVisData"].records}
+    both = (1 << 22) | (1 << 23)                                  # the look template's, whatever the faction
+    assert hgv[305][1] & both == both and not hgv[305][4] & both
+    assert all(hgv[306][f] & both == both for f in (1, 2, 3, 4, 5))
 
     with pytest.raises(DBCError, match="already exists"):
         _apply(t, SPECS[:1], name="x", cfs="KulTiran", look=1, ids=(7003, 7004, 9003, 9004), characters=None)
@@ -114,6 +124,131 @@ def test_apply_adds_both_factions_and_strip_undoes_it():
         strip_race(t, s.race_id)
     after = {k: [list(r) if isinstance(r, list) else r for r in v.records] for k, v in t.items()}
     assert after == before
+
+
+def test_a_race_with_bfas_names_gets_them_and_strip_removes_them():
+    t = _tables()
+    names = DBCFile(4)
+    names.add_record([1, names.add_string("Anduin"), 1, 0])                     # the look template's
+    t["NameGen"] = names
+    before = [list(r) for r in names.records]
+    own = [("Li Li", 1), ("Chen", 0), ("Mei", 1)]                                # BfA alternates sexes
+    counts = _apply(t, SPECS, name="Pandaren", cfs="Pandaren", look=1, ids=(7001, 7002, 9001, 9002),
+                    characters=None, names=own)
+    assert counts["NameGen"] == 6                                               # its own, on both twins
+    got = sorted((r[2], names.get_string(r[1]), r[3]) for r in names.records if r[2] in (22, 23))
+    assert got == sorted((race, n, sx) for race in (22, 23) for n, sx in own)
+    # the client reads a race/sex's names as ONE run of rows (from the first that matches)
+    runs = [k for k, _g in itertools.groupby((r[2], r[3]) for r in names.records)]
+    assert len(runs) == len(set(runs))
+    without = _tables()
+    without["NameGen"] = DBCFile(4)
+    without["NameGen"].add_record([1, without["NameGen"].add_string("Anduin"), 1, 0])
+    _apply(without, SPECS[:1], name="Kul Tiran", cfs="KulTiran", look=1, ids=(7001, 7002, 9001, 9002), characters=None)
+    assert [without["NameGen"].get_string(r[1]) for r in without["NameGen"].records if r[2] == 22] == ["Anduin"]
+    for sp in SPECS:
+        strip_race(t, sp.race_id)
+    assert [list(r) for r in names.records] == before
+
+
+def _snapshot(t):
+    return {k: [list(r) if isinstance(r, list) else r for r in v.records] for k, v in t.items()}
+
+
+def test_rebuilding_a_race_under_another_leaves_the_tables_as_they_were():
+    from retroport.race.build import _put_back_later, _Slot, _take_out_later
+    t = _tables()
+    t["NameGen"] = DBCFile(4)
+    t["NameGen"].add_record([1, t["NameGen"].add_string("Anduin"), 1, 0])
+    under = [RaceSpec(22, ALLIANCE, 1), RaceSpec(23, HORDE, 2)]
+    top = [RaceSpec(24, ALLIANCE, 1), RaceSpec(25, HORDE, 2)]
+    _apply(t, under, name="Kul Tiran", cfs="KulTiran", look=1, ids=(7001, 7002, 9001, 9002), characters={0: _Char()})
+    _apply(t, top, name="Pandaren", cfs="Pandaren", look=1, ids=(7003, 7004, 9003, 9004), characters=None,
+           names=[("Chen", 0)])
+    stacked = _snapshot(t)
+    later = _take_out_later(t, [22, 23], "client", lambda m: None)
+    assert "ChrRaces" in later and "CreatureDisplayInfo" in later and "NameGen" in later
+    assert not t["ChrRaces"].find_by_id(24)                       # the race on top: set aside for now
+    _apply(t, under, name="Kul Tiran", cfs="KulTiran", look=1, ids=(7001, 7002, 9001, 9002), characters={0: _Char()})
+    _put_back_later(t, later, "client")
+    assert _snapshot(t) == stacked                                # same places, same ids: nothing to install
+    # more names than it had reach the ids the race on top took: in a table nothing points at its
+    # rows stay in place, the first with the ids its old ones had, the rest above every row
+    later = _take_out_later(t, [22, 23], "client", lambda m: None)
+    _apply(t, under, name="Kul Tiran", cfs="KulTiran", look=1, ids=(7001, 7002, 9001, 9002), characters={0: _Char()},
+           names=[("Jaina", 1), ("Kul", 0)])
+    _put_back_later(t, later, "client")
+    after = _snapshot(t)
+    assert {k: v for k, v in after.items() if k != "NameGen"} == {k: v for k, v in stacked.items() if k != "NameGen"}
+    rows = t["NameGen"].records
+    assert [r[2] for r in rows] == [1, 22, 22, 23, 23, 24, 25]
+    assert [r[0] for r in rows] == [1, 2, 3, 6, 7, 4, 5] and rows[5:] == stacked["NameGen"][3:]
+    # the race on top rebuilt under nothing gets its own ids back too, though the rows before it moved
+    later = _take_out_later(t, [24, 25], "client", lambda m: None)
+    _apply(t, top, name="Pandaren", cfs="Pandaren", look=1, ids=(7003, 7004, 9003, 9004), characters=None,
+           names=[("Chen", 0)])
+    _put_back_later(t, later, "client")
+    assert _snapshot(t) == after
+    # where other rows point at its ids, a rebuild that grew is refused
+    se = DBCFile(2)
+    for i in (1, 2, 3):
+        se.add_record([i, 0])
+    tables = {"SoundEntries": se}
+    with pytest.raises(DBCError, match="--on-top"):
+        _put_back_later(tables, {"SoundEntries": _Slot(2, [[3, 7]], [3])}, "client")
+
+
+def test_a_classic_race_goes_on_the_bfa_screens_core_page():
+    bfa = 'RETROPORT_GLUE_STYLE = "bfa";\nMAX_RACES = 32;\n'
+    icons_ = {"PANDAREN_MALE": (0.75, 0.875, 0, 0.25)}
+    core = glue.patch_character_create_lua(bfa, 14, icons_, "PANDAREN", core=True)
+    block = core[core.index("begin icons PANDAREN"):core.index("end icons PANDAREN")]
+    assert 'CHARCREATE_CORE_RACES["PANDAREN"] = true;' in block
+    assert "CHARCREATE_CORE_RACES" not in glue.patch_character_create_lua(bfa, 14, icons_, "PANDAREN")
+    stock = glue.patch_character_create_lua("MAX_RACES = 10;\n", 14, icons_, "PANDAREN", core=True)
+    assert "CHARCREATE_CORE_RACES" not in stock                     # 3.3.5's own screen has one page
+
+
+def test_copied_outfits_show_each_items_own_display():
+    # the all-race patch has Human hunters wear item 148, a shirt, as display 9676, robe pants
+    outfits = RawDBC(77, 296)
+    items, shown, slots = [148, 2504] + [-1] * 22, [9676, 1] + [-1] * 22, [4, 15] + [-1] * 22
+    template = struct.pack("<I4B72i", 1, 1, 3, 0, 0, *items, *shown, *slots)
+    outfits.add_record(template)
+    assert clone_start_outfits(outfits, 1, 22, {148: 9976, 2504: 8106, 2512: 5996}) == 1
+    copy = outfits.records[-1]
+    assert copy[4:8] == bytes([22, 3, 0, 0])
+    assert struct.unpack_from("<3i", copy, 104) == (9976, 8106, -1)       # empty slots stay empty
+    assert copy[200:] == template[200:] and outfits.records[0] == template
+    clone_start_outfits(outfits, 1, 23)                                    # no Item.dbc: a straight copy
+    assert outfits.records[-1][104:] == template[104:]
+
+
+def test_a_race_with_its_own_helmets_names_them_and_hides_what_bfa_hides():
+    t = _tables()
+    # BfA: helmet 305 hides only ears (group 7) on the race, 306 hair and the beard (groups 0, 1); a row
+    # BfA has nothing on (none here) would follow the look template
+    _apply(t, SPECS, name="Kul Tiran", cfs="KulTiran", look=1, ids=(7001, 7002, 9001, 9002), characters=None,
+           helmet_prefix="Kt", helmet_hides={305: {7}, 306: {0, 1}})
+    chr_races = t["ChrRaces"]
+    assert chr_races.get_string(chr_races.find_by_id(22)[6]) == chr_races.get_string(chr_races.find_by_id(23)[6]) == "Kt"
+    assert chr_races.get_string(chr_races.find_by_id(1)[6]) == "Hu"
+    hgv = {r[0]: r for r in t["HelmetGeosetVisData"].records}
+    both = (1 << 22) | (1 << 23)
+    assert [hgv[305][f] & both == both for f in range(1, 8)] == [False, False, False, False, True, False, False]
+    assert [hgv[306][f] & both == both for f in range(1, 8)] == [True, True, False, False, False, False, False]
+    assert hgv[306][1] & 0x0DBE == 0x0DBE                          # the other races keep theirs
+
+
+def test_helmets_hide_on_the_new_race_what_they_hide_on_the_look_template():
+    d = DBCFile(8)
+    d.add_record([1, 0xFFFFF209, 0, 0, 0, 0, 0, 0])               # every race but Human and a few
+    d.add_record([2, 0x0DBE, 0, 0, 0, 0, 0, 0])
+    assert add_helmet_vis_race(d, 1, 22) == 2
+    assert not d.records[0][1] & (1 << 22) and d.records[1][1] & (1 << 22)
+    assert add_helmet_vis_race(d, 1, 22) == 0                     # rebuilding changes nothing
+    with pytest.raises(DBCError, match="0-31"):
+        add_helmet_vis_race(d, 1, 32)
 
 
 # --------------------------------------------------------------------------- GlueXML
@@ -143,6 +278,11 @@ def test_glue_patches_are_rerunnable():
     assert 'GLUE_BACKGROUND_ALIASES["KULTIRAN"] = "Human";' in p1
     # character select plays the scene music by the race's own name (third client test)
     assert 'GlueAmbienceTracks["KULTIRAN"] = GlueAmbienceTracks["KULTIRAN"] or GlueAmbienceTracks["HUMAN"];' in p1
+    # with a scene of its own the race keeps only the borrowed music - the alias goes, in place
+    p2 = glue.patch_glue_parent(p1, {}, "KULTIRAN", music={"KULTIRAN": "Human"})
+    assert "GLUE_BACKGROUND_ALIASES[\"KULTIRAN\"]" not in p2
+    assert 'GlueAmbienceTracks["KULTIRAN"] = GlueAmbienceTracks["KULTIRAN"] or GlueAmbienceTracks["HUMAN"];' in p2
+    assert p2.count("begin background KULTIRAN") == 1
 
     s1 = glue.patch_glue_strings('ABILITY_INFO_HUMAN1 = "- One.";\n', {"RACE_INFO_KULTIRAN": 'Say "ahoy"'}, "KULTIRAN")
     assert 'RACE_INFO_KULTIRAN = "Say \\"ahoy\\"";' in s1
@@ -259,6 +399,53 @@ def test_lettered_patches_rank_above_lettered_locale_patches(tmp_path, monkeypat
                      r"enUS\patch-enUS-x.MPQ", r"enUS\locale-enUS.MPQ"]
 
 
+def test_a_folder_patch_ranks_by_its_name_among_packed_ones(tmp_path, monkeypatch):
+    """The client's patch scan finds folders and files alike: the retail backport kit's packed
+    patch-I.MPQ outranks our folder patch-H.MPQ; a locale folder ranks with the locale patches;
+    a folder not named like a patch is not mounted."""
+    from retroport import mpq
+    data = tmp_path / "Data"
+    (data / "enUS").mkdir(parents=True)
+    for p in ("enUS/locale-enUS.MPQ", "enUS/patch-enUS-x.MPQ", "patch-I.MPQ", "patch-E.MPQ"):
+        (data / p).write_bytes(b"")
+    for p in ("patch-H.MPQ", "patch-W.MPQ", "enUS/patch-enUS-z.MPQ", "Backup.MPQ"):
+        (data / p).mkdir()
+    monkeypatch.setattr(mpq, "MPQ", lambda path: path)
+    order = [label for label, _src in mpq.ClientData(str(tmp_path)).sources]
+    assert order == [r"Data\patch-W.MPQ (folder)", "patch-I.MPQ", r"Data\patch-H.MPQ (folder)", "patch-E.MPQ",
+                     r"Data\enUS\patch-enUS-z.MPQ (folder)", r"enUS\patch-enUS-x.MPQ", r"enUS\locale-enUS.MPQ"]
+
+
+def test_a_build_reads_the_client_as_its_install_patch_sees_it(tmp_path, monkeypatch):
+    """With the kit's patch-I over our patch-H, a rebuild must not take the kit's Item.dbc rows in
+    (the kit's next scan would find its own ids twice): what outranks the install patch is set
+    aside, and named as what shadows a file."""
+    from retroport import mpq
+    data = tmp_path / "Data"
+    (data / "enUS").mkdir(parents=True)
+    (data / "enUS" / "locale-enUS.MPQ").write_bytes(b"")
+    for p in ("patch-H.MPQ", "patch-I.MPQ"):
+        (data / p / "DBFilesClient").mkdir(parents=True)
+        (data / p / "DBFilesClient" / "Item.dbc").write_bytes(p.encode())
+
+    class Empty:                                    # the stock archives: nothing we look for
+        def __init__(self, path):
+            self.path = path
+
+        def has(self, _name):
+            return False
+
+        def read(self, _name):
+            return None
+    monkeypatch.setattr(mpq, "MPQ", Empty)
+    whole = mpq.ClientData(str(tmp_path))
+    assert whole.find("DBFilesClient\\Item.dbc") == (r"Data\patch-I.MPQ (folder)", b"patch-I.MPQ")
+    ours = mpq.ClientData(str(tmp_path), top="patch-H.MPQ")
+    assert ours.find("DBFilesClient\\Item.dbc") == (r"Data\patch-H.MPQ (folder)", b"patch-H.MPQ")
+    assert ours.shadowed_by("DBFilesClient\\Item.dbc") == r"Data\patch-I.MPQ (folder)"
+    assert ours.shadowed_by("DBFilesClient\\Spell.dbc") is None
+
+
 # --------------------------------------------------------------------------- second client test
 
 def test_unmanaged_groups_keep_only_a_piece_that_fills_a_hole():
@@ -367,24 +554,45 @@ def _wide_skin(tmp_path, parts, tail=0):
     return p
 
 
+def _client_starts_agree(data: bytes) -> bool:
+    """The client rebuilds a skin's index buffer submesh after submesh in ARRAY order and draws each
+    from (file level << 16) | the low half of that offset: true when that lands on every submesh."""
+    _n, s_off = struct.unpack_from("<II", data, 0x1C)
+    offset = 0
+    for i in range(_n):
+        _sid, level, _vs, _vc, start, count = struct.unpack_from("<HHHHHH", data, s_off + i * 48)
+        if (level << 16) | start != offset:
+            return False
+        offset += count
+    return True
+
+
 def test_wide_skins_keep_the_body_first_then_switchable_geosets(tmp_path):
     from retroport.convert.fixup import order_skin_indices
     # an undrawn torso variant between the body and an eye glow / cape that started past 65,535
-    p = _wide_skin(tmp_path, [(0, 60000, True), (2202, 9000, False), (1703, 3000, True), (1502, 3000, True)])
+    parts = [(0, 60000, True), (2202, 9000, False), (1703, 3000, True), (1502, 3000, True)]
+    p = _wide_skin(tmp_path, parts)
     rep, = order_skin_indices([str(p)])
     assert rep["past_line"] == [] and rep["switchable"] == 6000
     data = p.read_bytes()
     n_t, t_off = struct.unpack_from("<II", data, 0x0C)
     _n, s_off = struct.unpack_from("<II", data, 0x1C)
+    n_b, b_off = struct.unpack_from("<II", data, 0x24)
     idx = struct.unpack_from(f"<{n_t}H", data, t_off)
     subs = [struct.unpack_from("<HHHHHH", data, s_off + i * 48) for i in range(4)]
     starts = {sid: (level << 16) | start for sid, level, _vs, _vc, start, _c in subs}
-    # the body stays at the start (past the line the client stopped drawing a Kul Tiran's face),
-    # the switchable geosets follow, the undrawn submesh goes last
+    # the body stays at the start, the switchable geosets follow, the undrawn submesh goes last
     assert starts[0] == 0 and starts[1703] == 60000 and starts[1502] == 63000 and starts[2202] == 66000
-    for i, (sid, level, _vs, vc, start, count) in enumerate(subs):    # each draws what it drew
+    # ... and the submesh array follows the same order, which is what the client's rebuild assumes
+    assert [sid for sid, *_rest in subs] == [0, 1703, 1502, 2202] and _client_starts_agree(data)
+    tag = {gid: i + 1 for i, (gid, _c, _d) in enumerate(parts)}
+    for sid, level, _vs, vc, start, count in subs:                    # each draws what it drew
         f = (level << 16) | start
-        assert set(idx[f:f + count]) == {i + 1} and vc == 64
+        assert set(idx[f:f + count]) == {tag[sid]} and vc == 64
+    # every batch was re-pointed at its submesh's new place
+    drawn_before = [gid for gid, _c, d in parts if d]
+    drawn_after = [subs[struct.unpack_from("<H", data, b_off + j * 24 + 4)[0]][0] for j in range(n_b)]
+    assert drawn_after == drawn_before
     # too much switchable geometry: what still STARTS past the line is reported (a submesh that only
     # ends past it is fine - the id the client matches on comes from its start)
     p2 = _wide_skin(tmp_path, [(0, 1000, True), (2, 40000, True), (3, 30000, True), (4, 5000, True)])
@@ -397,6 +605,7 @@ def test_wide_skins_keep_the_body_first_then_switchable_geosets(tmp_path):
     idx = struct.unpack_from(f"<{n_t}H", data, t_off)
     assert rep["reordered"] and rep["past_line"] == [] and n_t == 66000
     assert idx[:60000] == (1,) * 60000 and idx[60000:64000] == (2,) * 4000 and idx[64000:] == (99,) * 2000
+    assert _client_starts_agree(data)
 
 
 def test_every_facial_style_gets_a_facial_hair_texture_row():

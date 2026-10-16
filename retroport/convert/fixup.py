@@ -3,16 +3,17 @@
 These operate on files on disk and are pure-Python (no external tools):
 
 * ``clamp_skin_submeshes`` - drop skin submeshes (and the batches that use them)
-  down to WotLK's ceiling (default 64). Modern models carry far more geoset groups than
-  WotLK handles; the extras overflow and render wrong. (Concept from RaceBuilder's
-  clamp_skin_submeshes; validate against that proven version on real files.) RaceBuilder used 59; the
-  3.3.5 HD patch's HumanMale ships 61-63 submeshes, so the default is 64.
+  down to a ceiling (default 64; RaceBuilder's idea, which used 59). Not used for characters:
+  64 is no client limit - the 3.3.5 HD patch's own models draw up to 96 (GoblinFemale), and the
+  clamp cut a Pandaren's torso, legs and eyes.
 * ``clear_stale_anim_flags`` - after full re-inlining there are no .anim files, so
   the header's chunked-anim flags (0x2000 / 0x200000) are stale; clear them.
 * ``set_num_skin_profiles`` - set the M2's nViews to match the skins you shipped.
 * ``repair_combiner_header`` - restore model data MultiConverter overwrote with the
   combiner-combos header field (the first array after the header: global loops or sequences).
 * ``clear_combiner_combos`` - clear a combiner-combos table WotLK can't use (black-mesh fix).
+* ``fill_bone_influences`` - give skin sections BfA left at 0 bone influences the count their
+  vertices weigh.
 
 Every write goes through ``safeio.write_verified``: the edited bytes land in a
 temp file, are checked for structural problems the input didn't already have,
@@ -193,6 +194,42 @@ def remap_geosets(skin_paths: list[str], mapping: dict[int, int | None]) -> dict
     return report
 
 
+SECTION_BONE_INFLUENCES = 0x10        # M2SkinSection: the most bones a vertex of the section weighs
+
+
+def fill_bone_influences(m2_path: str, skin_paths: list[str]) -> int:
+    """Give every skin section whose ``boneInfluences`` is 0 the most bones any of its vertices
+    weighs. BfA's skins leave the field 0 (its renderer reads the weights) and the conversion
+    copies it; 3.3.5 picks a section's vertex path by it, and WarcraftXL logs each such section of
+    the Kul Tiran helmets as one its shadow draw would lock to the camera (it lifts 0 to 1 there).
+    WarcraftXL's own conversions carry the count (1 for a rigid helmet), as the stock models do.
+    Sections whose vertices weigh nothing are left. Returns the sections filled."""
+    with open(m2_path, "rb") as fh:
+        md20 = m2_data_block(fh.read())
+    n_v, v_off = S.read_m2array(md20, S.HDR_VERTICES)
+    weighs = [sum(1 for w in md20[v_off + i * 48 + 12:v_off + i * 48 + 16] if w) for i in range(n_v)]
+    filled = 0
+    for sp in skin_paths:
+        with open(sp, "rb") as fh:
+            data = bytearray(fh.read())
+        before = bytes(data)
+        n_l, l_off = S.read_m2array(data, S.SKIN_VERTICES)
+        lookup = struct.unpack_from(f"<{n_l}H", data, l_off) if n_l else ()
+        n_s, s_off = S.read_m2array(data, S.SKIN_SUBMESHES)
+        for i in range(n_s):
+            rec = s_off + i * S.M2SKINSECTION
+            first, count = struct.unpack_from("<HH", data, rec + 0x04)
+            if struct.unpack_from("<H", data, rec + SECTION_BONE_INFLUENCES)[0]:
+                continue
+            most = max((weighs[v] for v in lookup[first:first + count] if v < n_v), default=0)
+            if most:
+                struct.pack_into("<H", data, rec + SECTION_BONE_INFLUENCES, most)
+                filled += 1
+        if bytes(data) != before:
+            _save_skin(sp, before, bytes(data))
+    return filled
+
+
 SKIN_U16 = 0xFFFF
 
 
@@ -202,10 +239,17 @@ def order_skin_indices(skin_paths: list[str]) -> list[dict]:
     16 bits of a submesh's start in its ``level``, and 3.3.5 matches geosets on
     ``(level << 16) | id``: a switchable submesh past the line can never be hidden
     (wxl-wide-skin-geosets fixes that in the client), so as much switchable geometry as fits goes
-    below it - after the body, which must stay at the start: with it past the line (switchable
-    first) a Kul Tiran's face stopped drawing in the client (sixth client test). Returns per skin
-    {indices, reordered, switchable, past_line: switchable geoset ids that start past it}; a skin
-    whose submeshes share or skip index ranges is left alone."""
+    below it, after the body.
+
+    The submesh array is reordered to match, with every batch re-pointed. At load the client
+    rebuilds a model's index buffer one submesh after another in array order and writes each start
+    back as 16 bits, keeping the file's ``level``; WarcraftXL then draws from
+    ``(level << 16) | start``. That is only right when the array order is the index order. With
+    them apart (as this function left them before the eighth client test), a Kul Tiran's unmerged
+    draws sourced ears, eyes, belts and body pieces from the wrong place or past the buffer, and
+    with the body moved past the line its face stopped drawing (sixth client test). Returns per
+    skin {indices, reordered, switchable, past_line: switchable geoset ids that start past it}; a
+    skin whose submeshes share or skip index ranges is left alone."""
     reports = []
     for sp in skin_paths:
         with open(sp, "rb") as fh:
@@ -229,17 +273,25 @@ def order_skin_indices(skin_paths: list[str]) -> list[dict]:
         if n_t > SKIN_U16 and contiguous:
             indices = struct.unpack_from(f"<{n_t}H", data, t_off)
             order = sorted(subs, key=lambda s: (2 if s[0] not in drawn else 1 if s[1] else 0, s[0]))
-            out, starts = [], {}
-            for i, _sid, first, count in order:
-                starts[i] = len(out)
+            out, records, new_index, laid = [], [], {}, []
+            for k, (i, sid, first, count) in enumerate(order):
+                rec = bytearray(data[s_off + i * 48:s_off + (i + 1) * 48])
+                struct.pack_into("<H", rec, 2, len(out) >> 16)        # level
+                struct.pack_into("<H", rec, 8, len(out) & SKIN_U16)   # indexStart
+                records.append(rec)
+                new_index[i] = k
+                laid.append((k, sid, len(out), count))
                 out.extend(indices[first:first + count])
             out.extend(indices[spans[-1][1]:])
             struct.pack_into(f"<{n_t}H", data, t_off, *out)
+            data[s_off:s_off + n_s * 48] = b"".join(records)
+            for j in range(b_cnt):
+                at = b_off + j * S.M2BATCH + 0x04
+                old = struct.unpack_from("<H", data, at)[0]
+                struct.pack_into("<H", data, at, new_index.get(old, old))
             report["reordered"] = True
-            for i, _sid, _first, _count in subs:
-                struct.pack_into("<H", data, s_off + i * 48 + 2, starts[i] >> 16)       # level
-                struct.pack_into("<H", data, s_off + i * 48 + 8, starts[i] & SKIN_U16)  # indexStart
-            subs = [(i, sid, starts[i], c) for i, sid, _f, c in subs]
+            drawn = {new_index.get(i, i) for i in drawn}
+            subs = laid
         report["past_line"] = sorted({sid for i, sid, f, c in subs if sid and i in drawn and f > SKIN_U16})
         if bytes(data) != before:
             _save_skin(sp, before, bytes(data))

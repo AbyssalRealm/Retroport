@@ -4,14 +4,14 @@
 encrypted files). ``ClientData`` opens every archive of an install and answers
 "which copy of this file does the client actually load?", highest priority first:
 
-1. loose override folders - ``Data\\patch*.MPQ`` that are directories, by name, descending;
-2. custom patches ``Data\\patch-<token>.MPQ`` (token 4-999999 or letters; numbers < letters,
-   a < z);
-3. custom locale patches ``Data\\<loc>\\patch-<loc>-<token>.MPQ``, ranked the same way;
-4. the stock chain: patch-<loc>-3, patch-3, patch-<loc>-2, patch-2, patch-<loc>, patch,
+1. custom patches ``Data\\patch-<token>.MPQ`` (token 4-999999 or letters; numbers < letters,
+   a < z), packed or open folders alike - a folder named like a patch is mounted in its name's
+   place (a packed ``patch-I.MPQ`` outranks a folder ``patch-H.MPQ``);
+2. custom locale patches ``Data\\<loc>\\patch-<loc>-<token>.MPQ``, ranked the same way;
+3. the stock chain: patch-<loc>-3, patch-3, patch-<loc>-2, patch-2, patch-<loc>, patch,
    then the locale and base archives.
 
-Steps 2 and 3 are deliberately not interleaved. WarcraftXL's own host reader ranks a locale
+Steps 1 and 2 are deliberately not interleaved. WarcraftXL's own host reader ranks a locale
 ``patch-enUS-x`` above ``patch-E``, but a real WarcraftXL client (the "wod models" install)
 draws its characters from ``patch-E``'s CharSections, whose textures exist, and not from
 ``patch-enUS-x``'s, whose ``*_HD.blp`` textures are in no archive. Building on the latter
@@ -21,7 +21,6 @@ broke every race's customization, so lettered locale patches rank below lettered
 from __future__ import annotations
 
 import bz2
-import glob
 import os
 import struct
 import zlib
@@ -200,9 +199,14 @@ def _patch_rank(token: str) -> int | None:
 
 
 class ClientData:
-    """Every archive of a 3.3.5a install, in the order the client searches them."""
+    """Every archive of a 3.3.5a install, in the order the client searches them.
 
-    def __init__(self, client_dir: str, locale: str | None = None):
+    ``top`` (a patch under Data\\, the one a package installs into): the client as that patch
+    sees it - the archives that outrank it (another tool's patch-I.MPQ, made on top of ours) set
+    aside in ``above``, so a build never takes their rows in as its own; ``shadowed_by`` tells
+    which of them the client loads a file from instead."""
+
+    def __init__(self, client_dir: str, locale: str | None = None, top: str | None = None):
         data = os.path.join(client_dir, "Data")
         if not os.path.isdir(data):
             raise MPQError(f"{client_dir} has no Data folder - point at the WoW 3.3.5a folder")
@@ -214,35 +218,57 @@ class ClientData:
         self.locale = locale
         self.sources: list[tuple[str, object]] = []        # (label, MPQ | folder path)
 
-        loose = sorted((d for d in os.listdir(data) if os.path.isdir(os.path.join(data, d))
-                        and d.lower().startswith("patch") and d.lower().endswith(".mpq")),
-                       key=str.lower, reverse=True)
-        for d in loose:
-            self.sources.append((f"Data\\{d} (folder)", os.path.join(data, d)))
-
+        # a folder named like a patch is mounted as one, in its name's place: the client's patch
+        # scan (FindFirstFile on "patch-?.MPQ") finds directories too and the engine mounts them as
+        # uncompressed archives (WarcraftXL, src/patcher/NamedPatchArchives.cpp) - a packed
+        # patch-I.MPQ outranks a folder patch-H.MPQ
         custom = []
         for rel_dir, prefix, is_locale in ((os.path.join(data, locale), f"patch-{locale}-", True),
                                            (data, "patch-", False)):
-            for path in glob.glob(os.path.join(rel_dir, "*.mpq")) + glob.glob(os.path.join(rel_dir, "*.MPQ")):
-                name = os.path.basename(path)
-                if not os.path.isfile(path) or not name.lower().startswith(prefix.lower()):
+            if not os.path.isdir(rel_dir):
+                continue
+            for name in os.listdir(rel_dir):
+                path = os.path.join(rel_dir, name)
+                low = name.lower()
+                if not (low.endswith(".mpq") and low.startswith(prefix.lower())):
                     continue
                 rank = _patch_rank(name[len(prefix):-4])
-                if rank is not None:
+                if rank is not None and (os.path.isfile(path) or os.path.isdir(path)):
                     custom.append((rank, is_locale, path))
         seen = set()
         for _rank, _loc, path in sorted(custom, key=lambda t: (not t[1], t[0], t[2].lower()), reverse=True):
-            if path.lower() not in seen:
-                seen.add(path.lower())
+            if path.lower() in seen:
+                continue
+            seen.add(path.lower())
+            if os.path.isdir(path):
+                self.sources.append((f"Data\\{os.path.relpath(path, data)} (folder)", path))
+            else:
                 self._open(path, data)
         for stem in _STOCK_LOCALE_FIRST:
             stem = stem.format(loc=locale)
             path = os.path.join(data, locale, stem + ".MPQ") if locale in stem else os.path.join(data, stem + ".MPQ")
             if os.path.isfile(path):
                 self._open(path, data)
+        self.above: list[tuple[str, object]] = []
+        if top:
+            at = next((k for k, (_label, src) in enumerate(self.sources)
+                       if os.path.basename(src if isinstance(src, str) else src.path).lower() == top.lower()), None)
+            if at is not None:
+                self.above, self.sources = self.sources[:at], self.sources[at:]
 
     def _open(self, path: str, data: str) -> None:
         self.sources.append((os.path.relpath(path, data), MPQ(path)))
+
+    def shadowed_by(self, name: str) -> str | None:
+        """The archive above ``top`` the client loads ``name`` from instead, if any."""
+        rel = name.replace("/", "\\")
+        for label, src in self.above:
+            if isinstance(src, str):
+                if os.path.isfile(os.path.join(src, *rel.split("\\"))):
+                    return label
+            elif src.has(rel):
+                return label
+        return None
 
     def find(self, name: str) -> tuple[str, bytes] | None:
         """(source label, bytes) of the copy the client loads, or None."""
@@ -277,6 +303,6 @@ class ClientData:
         return hit[1]
 
     def close(self) -> None:
-        for _label, src in self.sources:
+        for _label, src in self.above + self.sources:
             if isinstance(src, MPQ):
                 src.close()

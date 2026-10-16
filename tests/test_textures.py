@@ -1,5 +1,6 @@
 """BLP2 writer (checked with Pillow as an independent decoder) and 3.3.5 texture sizing."""
 
+import random
 import struct
 
 import pytest
@@ -37,6 +38,21 @@ def test_palettized_matches_blizzard_layout(tmp_path):
 
     opaque = blp.header(blp.encode_palettized(Image.new("RGB", (64, 64), (1, 2, 3))))
     assert opaque["alpha_depth"] == 0 and opaque["mips"][0][1] == 64 * 64      # no alpha bytes
+
+
+def test_a_small_saturated_spot_keeps_its_colour(tmp_path):
+    # a Pandaren's gold eye on a face of grey fur: median cut snapped it to tan (177, 151, 89)
+    rnd = random.Random(1)
+    img = Image.new("RGB", (256, 192))
+    img.putdata([tuple(max(0, min(255, v + rnd.randint(-25, 25))) for v in (g, g, g - 8))
+                 for y in range(192) for x in range(256) for g in [40 + (x + 2 * y) % 180]])
+    for x in range(110, 118):
+        for y in range(170, 178):
+            img.putpixel((x, y), (190, 150, 20))
+    p = tmp_path / "eye.blp"
+    p.write_bytes(blp.encode_palettized(img))
+    r, g, b, _a = blp.decode(str(p)).getpixel((113, 173))
+    assert abs(r - 190) + abs(g - 150) + abs(b - 20) < 40
 
 
 def test_mip_chain_reaches_1x1_and_short_chains_are_refused(tmp_path):

@@ -52,6 +52,16 @@ def test_dbc_roundtrip_and_strings(tmp_path):
     assert d2.get_string(d2.records[-1][1]) == "hello"
 
 
+def test_a_row_stripped_and_added_again_leaves_the_file_as_it_was(tmp_path):
+    p = tmp_path / "T.dbc"
+    _wdbc(str(p), 2, [[1, 1], [2, 7]], b"\x00Human\x00KulTiran\x00")
+    d = DBCFile.load(str(p))
+    del d.records[1]
+    d.add_record([2, d.add_string("KulTiran")])
+    assert d.to_bytes() == p.read_bytes()                    # its string is shared, not copied
+    assert d.add_string("Dwarf") == 16 and d.add_string("Dwarf") == 16
+
+
 def test_next_free_id_with_floor_skips_used():
     d = DBCFile(1)
     for i in (100, 101, 103):

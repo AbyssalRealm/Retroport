@@ -3,8 +3,9 @@
 Every edit copies a *template* race so the new race behaves exactly like it unless
 told otherwise: the faction template (Human for Alliance, Orc for Horde) gives faction,
 language, racial skills/abilities, reputations and start gear; the *look* template
-(Human by default) gives voices, random names, helmet models (ClientPrefix) and the
-customization labels.
+(Human by default) gives voices, random names, helmet models (ClientPrefix), what those
+helmets hide (HelmetGeosetVisData) and the customization labels - the helmets and what they
+hide unless the race has its own (helmets.py).
 
 3.3.5a (12340) layouts used here:
   ChrRaces (69)            0 ID, 1 Flags, 2 FactionID, 4/5 Male/FemaleDisplayID, 6 ClientPrefix,
@@ -18,9 +19,11 @@ customization labels.
   SkillRaceClassInfo (8)   2 RaceMask          SkillLineAbility (14) 3 RaceMask, 5 ExcludeRace
   Faction (57)             2-5 ReputationRaceMask[4]
   EmotesTextSound (5)      0 ID, 2 RaceID      VocalUISounds (7) 0 ID, 2 RaceID
-  NameGen (4)              0 ID, 2 RaceID
+  NameGen (4)              0 ID, 1 Name, 2 RaceID, 3 Sex
   BarberShopStyle (40)     0 ID, 1 Type (0 hair, 2 facial hair), 2-17 DisplayName 18 flags,
                            19-34 Description 35 flags, 36 CostModifier (float), 37 Race, 38 Sex, 39 Data
+  HelmetGeosetVisData (8)  0 ID, 1-7 hidden-geoset race masks (1 << race): hair, facial 1-3, ears,
+                           16xx, eye glow (ItemDisplayInfo.HelmetGeosetVis[sex] points here)
 """
 
 from __future__ import annotations
@@ -33,11 +36,16 @@ from ..dbc import DBCError, DBCFile, RawDBC
 FIELDS = {"ChrRaces": 69, "CreatureDisplayInfo": 16, "CreatureModelData": 28, "SkillRaceClassInfo": 8,
           "SkillLineAbility": 14, "Faction": 57, "EmotesTextSound": 5, "VocalUISounds": 7, "NameGen": 4,
           "CharSections": 10, "CharHairGeosets": 6, "CharacterFacialHairStyles": 8, "BarberShopStyle": 40,
-          "SoundEntries": 30, "CreatureSoundData": 38}
+          "SoundEntries": 30, "CreatureSoundData": 38, "HelmetGeosetVisData": 8}
 # CreatureSoundData columns that hold SoundEntries ids (sounds.CSD_KIT_COLUMNS)
 CSD_SOUND_COLUMNS = (1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 24, 26, 27, 28, 29,
                      30, 33, 34, 35, 36)
 MASK_FIELDS = {"SkillRaceClassInfo": (2,), "SkillLineAbility": (3, 5), "Faction": (2, 3, 4, 5)}
+# HelmetGeosetVisData (8): 0 ID, 1-7 the races a helmet hides a geoset group for - hair, the three
+# facial groups, ears, 16xx, eye glow - as 1 << race, not race_bit's 1 << (race - 1): the client
+# tests them with `shl eax, cl` on the race at 0x4EF1D6
+HELMET_VIS_MASKS = range(1, 8)
+HELMET_VIS_GROUPS = (0, 1, 2, 3, 7, 16, 17)     # the geoset group each mask field hides
 RACE_ROW_FIELDS = {"EmotesTextSound": 2, "VocalUISounds": 2, "NameGen": 2}
 OWNED_ROW_FIELDS = {**RACE_ROW_FIELDS, "BarberShopStyle": 37}       # rows strip_race removes by race
 ALL_RACES = (0xFFFFFFFF, 0x7FFFFFFF)
@@ -69,7 +77,10 @@ class RaceSpec:
 # --------------------------------------------------------------------------- ChrRaces
 
 def add_chr_race(chr_races: DBCFile, spec: RaceSpec, *, name: str, file_string: str,
-                 male_display: int, female_display: int, look_template: int) -> list[int]:
+                 male_display: int, female_display: int, look_template: int,
+                 client_prefix: str | None = None) -> list[int]:
+    """``client_prefix`` names the race's own helmet models (``Kt``: Helm_*_KtM); without, the
+    race wears the look template's."""
     if chr_races.find_by_id(spec.race_id):
         raise DBCError(f"ChrRaces already has race {spec.race_id}")
     tpl = chr_races.find_by_id(spec.template)
@@ -84,7 +95,8 @@ def add_chr_race(chr_races: DBCFile, spec: RaceSpec, *, name: str, file_string: 
     row = list(tpl)
     row[0] = spec.race_id
     row[4], row[5] = male_display, female_display
-    row[6] = look[6]                                   # ClientPrefix: helmet models (Helm_*_<Prefix><M|F>)
+    # ClientPrefix: helmet models (Helm_*_<Prefix><M|F>)
+    row[6] = chr_races.add_string(client_prefix) if client_prefix else look[6]
     row[11] = chr_races.add_string(file_string)
     s = chr_races.add_string(name)
     for base in (14, 31, 48):                          # Name, NameFemale, NameMale: every locale
@@ -145,7 +157,15 @@ def add_base_info(base_info: RawDBC, race_id: int, classes: list[int] | None = N
     return classes
 
 
-def clone_start_outfits(outfits: RawDBC, template: int, race_id: int) -> int:
+OUTFIT_ITEMS, OUTFIT_DISPLAYS = 8, 104      # CharStartOutfit: 24 item ids, then their 24 display ids
+
+
+def clone_start_outfits(outfits: RawDBC, template: int, race_id: int,
+                        displays: dict[int, int] | None = None) -> int:
+    """The template's outfits for the new race. With ``displays`` (item -> DisplayInfoID, from
+    Item.dbc) each item shows its own display in character create: a template row can name the
+    wrong one (the all-race patch's Human and Undead hunters show item 148, the Rugged Trapper's
+    Shirt, as display 9676, black robe pants, so they stood in create without a shirt)."""
     if outfits.record_size != 296:
         raise DBCError(f"CharStartOutfit: record size {outfits.record_size}, expected 296 (3.3.5a)")
     if any(r[4] == race_id for r in outfits.records):
@@ -153,23 +173,66 @@ def clone_start_outfits(outfits: RawDBC, template: int, race_id: int) -> int:
     next_id = max((struct.unpack_from("<I", r)[0] for r in outfits.records), default=0) + 1
     added = 0
     for r in [r for r in outfits.records if r[4] == template]:
-        outfits.add_record(struct.pack("<IB", next_id, race_id) + r[5:])
+        rec = bytearray(struct.pack("<IB", next_id, race_id) + r[5:])
+        for k, item in enumerate(struct.unpack_from("<24i", rec, OUTFIT_ITEMS)):
+            if displays and item > 0 and item in displays:
+                struct.pack_into("<I", rec, OUTFIT_DISPLAYS + 4 * k, displays[item])
+        outfits.add_record(bytes(rec))
         next_id += 1
         added += 1
     return added
 
 
+def item_displays(items: DBCFile) -> dict[int, int]:
+    """Item.dbc (3.3.5a: ID, Class, SubClass, SoundOverride, Material, DisplayInfoID, ...) as
+    item -> DisplayInfoID."""
+    return {r[0]: r[5] for r in items.records if len(r) > 5}
+
+
 # --------------------------------------------------------------------------- race masks and race-keyed rows
 
-def add_race_bit(dbc: DBCFile, table: str, template_bit: int, bit: int) -> int:
-    """Wherever a mask includes the template race, include the new race too."""
+def add_race_bit(dbc: DBCFile, table: str, template_bit: int, bit: int, skip_skills: set[int] | None = None) -> int:
+    """Wherever a mask includes the template race, include the new race too - except the rows of
+    ``skip_skills`` (SkillRaceClassInfo / SkillLineAbility: the template's racial skill lines, for a
+    race with racials of its own)."""
     changed = 0
     for r in dbc.records:
+        if skip_skills and table in ("SkillRaceClassInfo", "SkillLineAbility") and r[1] in skip_skills:
+            continue
         hit = False
         for f in MASK_FIELDS[table]:
             v = r[f] & 0xFFFFFFFF
             if v & template_bit and not v & bit:
                 r[f] = v | bit
+                hit = True
+        changed += hit
+    return changed
+
+
+def helmet_vis_bit(race_id: int) -> int:
+    if not 0 <= race_id <= 31:
+        raise DBCError(f"race {race_id}: HelmetGeosetVisData masks are 1 << race in 32 bits, so the race id "
+                       "must be 0-31 for helmets to hide its hair")
+    return 1 << race_id
+
+
+def add_helmet_vis_race(dbc: DBCFile, look: int, race_id: int, hides: dict[int, set[int]] | None = None) -> int:
+    """A helmet hides the new race's hair, facial hair, ears and eye glow exactly where it hides the
+    look template's - the race wears that template's helmets. With ``hides`` (BfA's own rows for
+    a race wearing its own helmets: id -> geoset groups hidden), a row BfA has follows those
+    instead. The race's bit is set where it hides and cleared where it doesn't, so rebuilding
+    gives the same table."""
+    src, dst = helmet_vis_bit(look), helmet_vis_bit(race_id)
+    changed = 0
+    for r in dbc.records:
+        hit = False
+        own = hides.get(r[0]) if hides else None
+        for f, group in zip(HELMET_VIS_MASKS, HELMET_VIS_GROUPS):
+            v = r[f] & 0xFFFFFFFF
+            hide = group in own if own is not None else bool(v & src)
+            want = v | dst if hide else v & ~dst
+            if want != v:
+                r[f] = want
                 hit = True
         changed += hit
     return changed
@@ -188,6 +251,18 @@ def clone_race_rows(dbc: DBCFile, table: str, template: int, race_id: int) -> in
         next_id += 1
         added += 1
     return added
+
+
+def add_names(dbc: DBCFile, race_id: int, names: list[tuple[str, int]]) -> int:
+    """NameGen rows for the race's random names (``names``: (name, sex) - BfA's own for it), one
+    unbroken run per sex: the client's name generator (0x4E6790) takes the first row of a race/sex
+    and the rows right after it while they match, so BfA's male/female alternation leaves it one."""
+    if any(r[2] == race_id for r in dbc.records):
+        raise DBCError(f"NameGen already has rows for race {race_id}")
+    next_id = dbc.max_id() + 1
+    for k, (name, sex) in enumerate(sorted(names, key=lambda n: n[1])):
+        dbc.add_record([next_id + k, dbc.add_string(name), race_id, sex])
+    return len(names)
 
 
 # --------------------------------------------------------------------------- barber shop
@@ -277,7 +352,10 @@ def strip_race(tables: dict[str, object], race_id: int) -> dict[str, int]:
                 and se.get_string(r[2]).startswith(file_string)}
         if ours:
             drop("SoundEntries", lambda r: r[0] not in ours)
-    for name, fields in MASK_FIELDS.items():
+    masks = [(name, fields, bit) for name, fields in MASK_FIELDS.items()]
+    if 0 <= race_id <= 31:
+        masks.append(("HelmetGeosetVisData", HELMET_VIS_MASKS, helmet_vis_bit(race_id)))
+    for name, fields, mask_bit in masks:
         d = tables.get(name)
         if d is None:
             continue
@@ -286,8 +364,8 @@ def strip_race(tables: dict[str, object], race_id: int) -> dict[str, int]:
             hit = False
             for f in fields:
                 v = r[f] & 0xFFFFFFFF
-                if v & bit and v not in ALL_RACES:
-                    r[f] = v & ~bit
+                if v & mask_bit and v not in ALL_RACES:
+                    r[f] = v & ~mask_bit
                     hit = True
             n += hit
         if n:

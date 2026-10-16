@@ -30,9 +30,10 @@ Only skins with more than 65,535 indices are affected: on any other skin `level`
 meaning (an LOD/sub-batch marker) and nothing changes.
 
 `retroport race` lays a character's skin out body first, then switchable geosets, so as many as
-fit sit below the line; the body has to stay first (moved past the line, a Kul Tiran's face stopped
-drawing). Both Kul Tirans still have switchable geosets past it (the male's eye glows and belts, most
-of the female's), so both need this extension.
+fit sit below the line, and puts the submesh array in that same order: the client's unmerged
+draw rebuilds the index buffer in array order and keeps the file's `level`, so the two orders
+have to agree. Both Kul Tirans still have switchable geosets past the line (the male's eye glows
+and belts, most of the female's), so both need this extension.
 
 WarcraftXL fills a detour's `original` in only when it enables the hook chain, after `WXL_Load`
 returns: the success test is `HookAttach`'s result (checking `original` there made the extension

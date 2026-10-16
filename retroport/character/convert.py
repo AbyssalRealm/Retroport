@@ -37,8 +37,10 @@ from ..formats import blp
 from ..listfile import Listfile
 from ..safeio import write_verified
 from . import layouts as L
+from . import retail as retail_tables
+from .extras import ExtrasError, split_extra_region
 from .model import remap_model_uvs
-from .textures import convert_composite, convert_region, group_for
+from .textures import convert_composite, convert_region, extra_texture, group_for
 
 SEX_NAMES = {0: "Male", 1: "Female"}
 FACE, LOWER, UPPER = (9, 10), 10, 9
@@ -170,12 +172,19 @@ class CharacterResult(BaseModel):
     textures: int = 0
     rows: dict[str, int] = {}
     uv: dict = {}
+    # the skin BfA paints outside its layout's sections (extras.py): the corner the skin rows'
+    # extra textures are cut from ({x, y, w, h} in source-layout pixels), and what was split off
+    extra: dict = {}
     warnings: list[str] = []
     check: list[str] = []
     # the race-independent customization data, for writing rows under any race id
     sections: list[dict] = []
     hair: list[dict] = []
     facial: list[dict] = []
+    # a retail source's barber shop names: {"hair": {variation: name}, "facial": {variation: name}}
+    # (BfA's come from its BarberShopStyle table)
+    names: dict[str, dict[int, str]] = {}
+    source: str = "bfa"                    # "bfa" or "retail"
 
 
 @dataclass
@@ -201,32 +210,61 @@ def _find_listfile_paths(listfile: str, paths: set[str]) -> dict[str, int]:
     return found
 
 
-class BfaInstall:
-    """Read access to a local BfA install: files by FileDataID and DB2 tables by name."""
+def _listfile_names(listfile: str, fdids: set[int]) -> dict[int, str]:
+    """Stream the listfile once for FileDataID -> path (backslashes)."""
+    found: dict[int, str] = {}
+    with open(listfile, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            parsed = Listfile._split(line)
+            if parsed and parsed[0] in fdids:
+                found[parsed[0]] = parsed[1]
+    return found
 
-    def __init__(self, install_dir: str, dbd_dir: str, listfile: str):
+
+class BfaInstall:
+    """Read access to a local install: files by FileDataID and DB2 tables by name. A BfA (8.x)
+    install, or a retail one (9.0+, ``retail``: its customization is read through retail.py;
+    ``product`` picks it in a .build.info that lists several, e.g. "wow")."""
+
+    def __init__(self, install_dir: str, dbd_dir: str, listfile: str, product: str | None = None):
         from wotlkconv.casc import CascStorage
         from wotlkconv.db.dbd import DbdIndex
-        self.casc = CascStorage.open(install_dir)
+        from wotlkconv.errors import ConverterError
+        try:
+            self.casc = CascStorage.open(install_dir, product=product)
+        except ConverterError as e:
+            raise ValueError(f"{install_dir}: {e}") from e
         self.defs = DbdIndex(dbd_dir)
         if not self.defs:
             raise ValueError(f"no .dbd definitions in {dbd_dir} (point at WoWDBDefs\\definitions)")
         self.listfile = listfile
+        self.retail = install_major(self.casc.build.version) >= 9
         self._tables: dict[str, list[tuple[int, dict]]] = {}
-        self.fdids = _find_listfile_paths(listfile, {f"dbfilesclient/{t.lower()}.db2" for t in DB2_TABLES})
+        names = DB2_TABLES + (retail_tables.DB2_TABLES if self.retail else ())
+        self.fdids = _find_listfile_paths(listfile, {f"dbfilesclient/{t.lower()}.db2" for t in names})
 
     def read(self, fdid: int) -> bytes:
         return self.casc.read_file_id(fdid)
 
     def table(self, name: str) -> list[tuple[int, dict]]:
         from wotlkconv.db.db2 import parse_db2
+        from wotlkconv.errors import ConverterError
         if name not in self._tables:
             fdid = self.fdids.get(f"dbfilesclient/{name.lower()}.db2")
             if fdid is None:
                 raise ValueError(f"{name}.db2 is not in the listfile")
-            data = self.casc.read_file_id(fdid, zero_encrypted=True)
-            self._tables[name] = list(parse_db2(data, name, definitions=self.defs, table_name=name))
+            try:
+                data = self.casc.read_file_id(fdid, zero_encrypted=True)
+                self._tables[name] = list(parse_db2(data, name, definitions=self.defs, table_name=name))
+            except ConverterError as e:             # a table this build no longer has (retail's CharSections)
+                raise ValueError(f"{name}.db2: {e}") from e
         return self._tables[name]
+
+
+def install_major(version: str) -> int:
+    """The expansion number of a .build.info version ("8.3.7.35662" -> 8); 0 when unknown."""
+    head = str(version or "").split(".")[0]
+    return int(head) if head.isdigit() else 0
 
 
 def _find_race(install: BfaInstall, race: str) -> tuple[int, dict]:
@@ -240,7 +278,11 @@ def _find_race(install: BfaInstall, race: str) -> tuple[int, dict]:
 
 def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, race_id: int = 33,
                       listfile: str, dbd_dir: str, dbc_dir: str | None = None, target: str = "hd",
+                      product: str | None = None,
                       on_log: Callable[[str], None] | None = None) -> CharacterResult:
+    """``install_dir`` is a BfA install, or a retail one (``product`` "wow"): its ChrModel and
+    customization are projected onto CharSections & co. by retail.py, and its type-19 eye texture
+    is baked into the eyeballs."""
     log = on_log or (lambda m: None)
     sex_id = {"male": 0, "female": 1}.get(sex.lower())
     if sex_id is None:
@@ -253,35 +295,45 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
         _refuse_overwrite(dbc_dir, os.path.join(out_dir, "DBFilesClient"))
 
     log(f"Opening {install_dir} ...")
-    bfa = BfaInstall(install_dir, dbd_dir, listfile)
+    bfa = BfaInstall(install_dir, dbd_dir, listfile, product=product)
     bfa_race_id, race_row = _find_race(bfa, race)
     cfs = race_row["ClientFileString"]
     sex_name = SEX_NAMES[sex_id]
-    res = CharacterResult(race=cfs, sex=sex_name, race_id=race_id)
-    log(f"Race {cfs} (BfA id {bfa_race_id}), {sex_name} -> 3.3.5 race id {race_id}, {target} layout")
+    res = CharacterResult(race=cfs, sex=sex_name, race_id=race_id, source="retail" if bfa.retail else "bfa")
+    rc = retail_tables.read_character(bfa.table, bfa_race_id, sex_id, cfs) if bfa.retail else None
+    layout_id = rc.layout_id if rc else race_row["CharComponentTextureLayoutID"]
+    log(f"Race {cfs} ({'retail' if rc else 'BfA'} id {bfa_race_id}), {sex_name} -> 3.3.5 race id {race_id}, "
+        f"{target} layout" + (f"; ChrModel {rc.chr_model}" if rc else ""))
 
     # --- layouts ---
     layouts = {i: r for i, r in bfa.table("CharComponentTextureLayouts")}
     sections = [r for _i, r in bfa.table("CharComponentTextureSections")]
-    src = L.layout_from_tables(layouts, sections, race_row["CharComponentTextureLayoutID"])
+    src = L.layout_from_tables(layouts, sections, layout_id)
     dst = L.TARGETS[target]
     groups = L.build_groups(src, dst)
     identity = L.is_identity(src, dst)
-    log(f"  source layout {race_row['CharComponentTextureLayoutID']} ({src.width}x{src.height}) -> "
+    log(f"  source layout {layout_id} ({src.width}x{src.height}) -> "
         f"{dst.width}x{dst.height}" + (" (same shape: no UV remap)" if identity else ""))
 
     # --- model ---
     char_dir = os.path.join(out_dir, "Character", cfs, sex_name)
     stem = f"{cfs}{sex_name}"
-    model_path = f"character/{cfs.lower()}/{sex_name.lower()}/{cfs.lower()}{sex_name.lower()}.m2"
-    found = _find_listfile_paths(listfile, {model_path})
-    if model_path not in found:
-        raise ValueError(f"{model_path} is not in the listfile")
+    if rc:
+        names = _listfile_names(listfile, {rc.model_fdid})
+        model_path = names.get(rc.model_fdid, f"FileDataID {rc.model_fdid}")
+        model_fdid = rc.model_fdid
+    else:
+        model_path = f"character/{cfs.lower()}/{sex_name.lower()}/{cfs.lower()}{sex_name.lower()}.m2"
+        found = _find_listfile_paths(listfile, {model_path})
+        if model_path not in found:
+            raise ValueError(f"{model_path} is not in the listfile")
+        model_fdid = found[model_path]
     work = os.path.join(out_dir, "_work")
     os.makedirs(work, exist_ok=True)
     src_model = os.path.join(work, f"{stem}.m2")
-    write_verified(src_model, bfa.read(found[model_path]))
-    log(f"Converting {model_path} (wotlkconv, from the install)...")
+    write_verified(src_model, bfa.read(model_fdid))
+    log(f"Converting {model_path} (wotlkconv, from the install)"
+        + (f" - retail's {rc.model_note} body" if rc and rc.model_note else "") + "...")
     er = engine.convert_with_wotlkconv(src_model, char_dir, output_stem=stem, listfile_path=listfile,
                                        casc=bfa.casc, on_log=log)
     for n in er.notes:
@@ -293,20 +345,37 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
     res.files += er.written
     skins = sorted(p for p in er.written if p.lower().endswith(".skin"))
 
+    tfd: dict[int, list[tuple[int, int]]] = {}
+    for fid, r in bfa.table("TextureFileData"):
+        tfd.setdefault(r["MaterialResourcesID"], []).append((r.get("UsageType", 0), r.get("FileDataID", fid)))
+
+    def fdid_of(mat: int) -> int | None:
+        files = sorted(tfd.get(mat, []))
+        return files[0][1] if files else None
+
+    if rc:
+        res.files += _bake_eyes(src_model, er.output, fdid_of(rc.eye_material) if rc.eye_material else None,
+                                f"Character\\{cfs}\\{sex_name}\\{stem}Eyes.blp", out_dir, bfa, work, res, log)
     fixup.clear_stale_anim_flags(er.output)
-    for sp in skins:
-        fixup.clamp_skin_submeshes(sp, 64)
+    # every submesh is kept: the client's own HD models (patch-E) draw up to 96 (GoblinFemale), and
+    # clamping a Pandaren's 86 to 64 dropped its torso, legs, eyes and belts
     fixup.clear_combiner_combos(er.output, skins)
     stripped = fixup.strip_unfilled_texture_layers(er.output, skins)
     if stripped:
         log(f"  cloak: dropped the empty emblem layer from {stripped} batch(es) (3.3.5 has no guild-emblem texture)")
     all_geosets = set(analyze_skin(skins[0]).geosets) if skins else set()
-    unmanaged = {g for g in all_geosets if g // 100 >= MANAGED_GEOSET_GROUPS}
-    remap = unmanaged_geoset_remap(all_geosets, hole_fill_ratios(er.output, skins[0], unmanaged)) if unmanaged else {}
+    if rc:
+        # retail's defaults for what 3.3.5 can't switch, its features moved into facial groups
+        retail_tables.plan_geosets(rc, all_geosets)
+        remap = {g: v for g, v in rc.geosets.items() if g in all_geosets}
+    else:
+        unmanaged = {g for g in all_geosets if g // 100 >= MANAGED_GEOSET_GROUPS}
+        remap = unmanaged_geoset_remap(all_geosets, hole_fill_ratios(er.output, skins[0], unmanaged)) \
+            if unmanaged else {}
     if remap:
         fixup.remap_geosets(skins, remap)
-        log("  geosets 3.3.5 does not switch: " + ", ".join(f"{g}->{'body' if v == 0 else 'hidden'}"
-                                                            for g, v in sorted(remap.items())))
+        log("  geosets 3.3.5 does not switch: " + ", ".join(
+            f"{g}->{'body' if v == 0 else 'hidden' if v is None else v}" for g, v in sorted(remap.items())))
     for rep in fixup.order_skin_indices(skins):
         if rep["indices"] > fixup.SKIN_U16:
             log(f"  {rep['skin']}: {rep['indices']} indices, " + (
@@ -317,7 +386,36 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
                 f"{rep['skin']}: switchable geosets {rep['past_line']} start past index 65,535, where the stock "
                 "client can never hide them (every cape, eye glow, belt and robe piece at once) - install "
                 "the WarcraftXL extension wxl-wide-skin-geosets (retroport-tool\\native)")
+    filled = fixup.fill_bone_influences(er.output, skins)
+    if filled:
+        log(f"  {filled} skin section(s) given the bone influences their vertices weigh (BfA leaves them 0)")
     res.files += _extract_fixed_textures(er.output, out_dir, bfa, listfile, work, log)
+
+    rows = rc.sections if rc else [
+        r for _i, r in bfa.table("CharSections")
+        if r["RaceID"] == bfa_race_id and r["SexID"] == sex_id and r["BaseSection"] in (0, 1, 2, 3, 4)]
+    region = None
+    if not identity:
+        # a Pandaren's hair draws its skin row's extra texture, which is each colour's hair texture
+        extras = {fdid_of(r["MaterialResourcesID"][1]) for r in rows if r["BaseSection"] == 0} - {None}
+        hair_tex = {fdid_of(r["MaterialResourcesID"][0]) for r in rows if r["BaseSection"] == 3} - {None}
+        try:
+            region = split_extra_region(er.output, skins, src, groups, hair_ok=extras <= hair_tex)
+        except ExtrasError as e:
+            res.warnings.append(f"skin outside the layout's sections left on the body texture: {e}")
+        if region and region.found:
+            r = region.rect
+            res.extra = {"x": r.x, "y": r.y, "w": r.w, "h": r.h, "vertices": region.vertices,
+                         "triangles": region.triangles, "submeshes": region.submeshes, "hair_slots": region.hair_slots}
+            log(f"  skin outside the layout's sections ({region.vertices} vertices, {region.triangles} triangles: "
+                f"toes, pads, tail...): own submeshes ({region.submeshes}) on the skin rows' extra texture, cut from "
+                f"({r.x}, {r.y}) {r.w}x{r.h}" + (f"; hair texture slots {region.hair_slots} drawn as hair"
+                                                 if region.hair_slots else ""))
+            if region.skipped:
+                res.warnings.append(f"{region.skipped} triangle(s) outside the layout's sections share vertices "
+                                    "with the body and stay on the body texture")
+        else:
+            region = None
 
     if not identity:
         rep = remap_model_uvs(er.output, skins, src, dst, groups)
@@ -331,18 +429,9 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
             res.warnings.append(f"UV remap: {rep.outside} skin vertices outside every section (left as-is)")
 
     # --- textures ---
-    tfd: dict[int, list[tuple[int, int]]] = {}
-    for fid, r in bfa.table("TextureFileData"):
-        tfd.setdefault(r["MaterialResourcesID"], []).append((r.get("UsageType", 0), r.get("FileDataID", fid)))
-    rows = [r for _i, r in bfa.table("CharSections")
-            if r["RaceID"] == bfa_race_id and r["SexID"] == sex_id and r["BaseSection"] in (0, 1, 2, 3, 4)]
     log(f"Converting textures for {len(rows)} CharSections row(s)...")
     out_rows, cache = [], {}
     images: dict[int, object] = {}
-
-    def fdid_of(mat: int) -> int | None:
-        files = sorted(tfd.get(mat, []))
-        return files[0][1] if files else None
 
     def image(fdid: int):
         if fdid not in images:
@@ -369,13 +458,23 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
         row = _Row(sec, var, col, r["Flags"] & 0x1F)
         tag = f"{var:02d}_{col:02d}"
         if sec == 0:
+            skin_fd = fdid_of(mats[0]) if mats[0] else None
             for slot, suffix in ((0, ""), (1, "_Extra")):
                 fd = fdid_of(mats[slot]) if mats[slot] else None
-                if fd:
-                    img = image(fd) if identity else convert_composite(image(fd), src, dst, groups)
-                    if identity:
-                        img = img.resize((dst.width, dst.height), blp.Image.Resampling.LANCZOS)
-                    row.textures[slot] = write_blp(f"Skin{tag}{suffix}", img)
+                if slot == 1 and region is not None:
+                    # the extra texture is the skin's corner outside the layout (extras.py)
+                    if skin_fd:
+                        row.textures[1] = write_blp(f"Skin{tag}{suffix}", extra_texture(image(skin_fd), src, region.rect))
+                    continue
+                if not fd:
+                    continue
+                img = image(fd)
+                if identity:
+                    img = img.resize((dst.width, dst.height), blp.Image.Resampling.LANCZOS)
+                elif img.width * src.height == img.height * src.width:
+                    img = convert_composite(img, src, dst, groups)
+                # else: a texture of its own (not the layout's shape), drawn as it is
+                row.textures[slot] = write_blp(f"Skin{tag}{suffix}", img)
         else:
             if sec == 3 and mats[0]:
                 fd = fdid_of(mats[0])
@@ -410,16 +509,19 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
     log(f"  wrote {res.textures} texture(s)")
 
     # --- geosets ---
-    hair_rows = [r for _i, r in bfa.table("CharHairGeosets")
-                 if r["RaceID"] == bfa_race_id and r["SexID"] == sex_id]
-    hair = [r for r in hair_rows if r.get("GeosetType", 0) == 0]          # the hair itself
-    extras = [r for r in hair_rows if r.get("GeosetType", 0) in FACIAL_SLOT_GROUPS]
-    skipped = [r for r in hair if r.get("CustomGeoFileDataID") or r.get("HdCustomGeoFileDataID")]
-    hair = [r for r in hair if r not in skipped]
-    if skipped:
-        res.warnings.append(f"{len(skipped)} hair style(s) use separate custom-geometry files; not ported")
-    facial = [r for _i, r in bfa.table("CharacterFacialHairStyles")
-              if r["RaceID"] == bfa_race_id and r["SexID"] == sex_id]
+    if rc:
+        hair, extras, facial = list(rc.hair), [], []
+    else:
+        hair_rows = [r for _i, r in bfa.table("CharHairGeosets")
+                     if r["RaceID"] == bfa_race_id and r["SexID"] == sex_id]
+        hair = [r for r in hair_rows if r.get("GeosetType", 0) == 0]          # the hair itself
+        extras = [r for r in hair_rows if r.get("GeosetType", 0) in FACIAL_SLOT_GROUPS]
+        skipped = [r for r in hair if r.get("CustomGeoFileDataID") or r.get("HdCustomGeoFileDataID")]
+        hair = [r for r in hair if r not in skipped]
+        if skipped:
+            res.warnings.append(f"{len(skipped)} hair style(s) use separate custom-geometry files; not ported")
+        facial = [r for _i, r in bfa.table("CharacterFacialHairStyles")
+                  if r["RaceID"] == bfa_race_id and r["SexID"] == sex_id]
     model_geosets = set(analyze_skin(skins[0]).geosets) if skins else set()
     missing = sorted({r["GeosetID"] for r in hair if r["GeosetID"] > 0 and r["GeosetID"] not in model_geosets})
     if missing:
@@ -430,9 +532,15 @@ def convert_character(install_dir: str, race: str, sex: str, out_dir: str, *, ra
     # means bald, which hides the hair - so only the bald style (geoset 0) keeps it
     res.hair = [{"VariationID": r["VariationID"], "GeosetID": r["GeosetID"], "Showscalp": int(r["GeosetID"] == 0)}
                 for r in hair]
-    eyes = 2 if 1702 in model_geosets and 1701 not in model_geosets else None
-    res.facial = facial_styles([{"VariationID": r["VariationID"], "Geoset": list(r["Geoset"])} for r in facial],
-                               extras, eyes)
+    if rc:
+        # retail's features rows are 3.3.5's already (retail.py), its eyeballs part of the body
+        res.facial = [{"VariationID": r["VariationID"], "Geoset": list(r["Geoset"])} for r in rc.facial]
+        res.names = rc.names
+        res.warnings += [f"customization: {n}" for n in rc.notes]
+    else:
+        eyes = 2 if 1702 in model_geosets and 1701 not in model_geosets else None
+        res.facial = facial_styles([{"VariationID": r["VariationID"], "Geoset": list(r["Geoset"])} for r in facial],
+                                   extras, eyes)
 
     # --- DBCs ---
     if dbc_dir:
@@ -483,6 +591,44 @@ def _extract_fixed_textures(m2_path: str, out_dir: str, bfa: BfaInstall, listfil
     if written:
         log(f"  extracted {len(written)} fixed texture(s) (eye glow, jewelry)")
     return written
+
+
+RETAIL_EYES = 19                 # retail's eye texture type (Shadowlands+); 3.3.5 knows 0-15
+
+
+def _source_texture_types(model: bytes) -> list[int]:
+    """The texture types of a source model (MD21-chunked or plain MD20)."""
+    if model[:4] == b"MD21":
+        size = struct.unpack_from("<I", model, 4)[0]
+        model = model[8:8 + size]
+    n, off = struct.unpack_from("<II", model, 0x50)
+    return [struct.unpack_from("<I", model, off + i * 16)[0] for i in range(n)]
+
+
+def _bake_eyes(src_model: str, m2_path: str, fdid: int | None, rel: str, out_dir: str, bfa: BfaInstall,
+               work: str, res: CharacterResult, log: Callable[[str], None]) -> list[str]:
+    """Retail draws the eyeballs with an eye-colour texture (type 19) 3.3.5 has no slot for;
+    the conversion leaves those slots empty (green eyes). Each becomes a fixed texture: retail's
+    default eye colour (``fdid``), written to ``rel``."""
+    from ..convert.texbake import bake_file
+    from ..formats.md20 import read_texture_slots
+    with open(src_model, "rb") as fh:
+        types = _source_texture_types(fh.read())
+    with open(m2_path, "rb") as fh:
+        slots = read_texture_slots(fh.read())
+    eyes = [s.index for s in slots if s.index < len(types) and types[s.index] == RETAIL_EYES and not s.name]
+    if not eyes:
+        return []
+    if not fdid:
+        res.warnings.append(f"eyes: no default eye colour texture; texture slot(s) {eyes} stay empty")
+        return []
+    tmp = os.path.join(work, f"eyes_{fdid}.blp")
+    write_verified(tmp, bfa.read(fdid), lambda p: blp.decode(p))
+    with open(tmp, "rb") as fh:
+        written = write_verified(os.path.join(out_dir, *rel.split("\\")), fh.read())
+    bake_file(m2_path, {i: rel for i in eyes})
+    log(f"  eyes: retail's default eye colour baked into texture slot(s) {eyes} ({rel})")
+    return [written]
 
 
 def _write_dbcs(dbc_dir: str, out_dir: str, race_id: int, sex_id: int, rows: list[_Row],

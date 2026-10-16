@@ -1,4 +1,4 @@
-"""Fixup tests - submesh clamp, stale anim-flag clear, nViews set."""
+"""Fixup tests - submesh clamp, stale anim-flag clear, nViews set, bone influences."""
 
 import struct
 
@@ -101,6 +101,36 @@ def test_clear_combiner_combos(tmp_path):
     _, b_off = S.read_m2array(data, S.SKIN_BATCHES)
     got = [struct.unpack_from("<H", data, b_off + i * S.M2BATCH + S.BATCH_SHADER)[0] for i in range(3)]
     assert got == [0, 0, 0x8000]                                       # index->0, no-render preserved
+
+
+def test_bone_influences_are_filled_where_the_source_left_none(tmp_path):
+    # four vertices: rigid, two bones, rigid, unweighted
+    weights = [(255, 0, 0, 0), (128, 127, 0, 0), (255, 0, 0, 0), (0, 0, 0, 0)]
+    m2 = bytearray(_md20()) + bytearray(len(weights) * 48)
+    _m2a(m2, S.HDR_VERTICES, len(weights), 0x138)
+    for i, w in enumerate(weights):
+        m2[0x138 + i * 48 + 12:0x138 + i * 48 + 16] = bytes(w)
+    (tmp_path / "m.m2").write_bytes(bytes(m2))
+    # sections over vertices 0-1 (influences 0), 2 (3, kept), 3 (0, nothing weighed)
+    sections = [(0, 2, 0), (2, 1, 3), (3, 1, 0)]
+    skin = bytearray(0x38 + len(sections) * S.M2SKINSECTION)
+    skin[0:4] = b"SKIN"
+    _m2a(skin, S.SKIN_VERTICES, 4, 0x30)
+    struct.pack_into("<4H", skin, 0x30, 0, 1, 2, 3)
+    _m2a(skin, S.SKIN_SUBMESHES, len(sections), 0x38)
+    for i, (first, count, infl) in enumerate(sections):
+        rec = 0x38 + i * S.M2SKINSECTION
+        struct.pack_into("<HH", skin, rec + 4, first, count)
+        struct.pack_into("<H", skin, rec + fixup.SECTION_BONE_INFLUENCES, infl)
+    (tmp_path / "m00.skin").write_bytes(bytes(skin))
+
+    paths = [str(tmp_path / "m00.skin")]
+    assert fixup.fill_bone_influences(str(tmp_path / "m.m2"), paths) == 1
+    data = (tmp_path / "m00.skin").read_bytes()
+    got = [struct.unpack_from("<H", data, 0x38 + i * S.M2SKINSECTION + fixup.SECTION_BONE_INFLUENCES)[0]
+           for i in range(len(sections))]
+    assert got == [2, 3, 0]
+    assert fixup.fill_bone_influences(str(tmp_path / "m.m2"), paths) == 0      # idempotent
 
 
 def test_clear_combiner_noop_when_flag_absent(tmp_path):

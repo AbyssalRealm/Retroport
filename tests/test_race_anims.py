@@ -42,3 +42,39 @@ def test_one_shot_emotes_are_emote_animations_without_a_special_proc():
               [50, 0, 46, 0, 0, 0, 0]]      # an emote row playing a combat animation
     names = {77: "EmoteCry", 69: "EmoteDance", 46: "AttackBow"}
     assert anims.one_shot_emotes(emotes, names) == {77}
+
+
+def _with_lookups(m2: bytes, size: int) -> bytes:
+    """``m2`` with a sequence lookup table of ``size`` slots, filled the client's way (first
+    sequence of each id at id % size, probing on (i * i + last slot) % size)."""
+    table = [anims.NO_SEQUENCE] * size
+    for index, (_rec, aid, var, *_rest) in enumerate(anims.sequences(m2)):
+        if var:
+            continue
+        slot, probe = aid % size, 0
+        while table[slot] != anims.NO_SEQUENCE:
+            probe += 1
+            slot = (probe * probe + slot) % size
+        table[slot] = index
+    out = bytearray(m2)
+    struct.pack_into("<II", out, 0x24, size, len(out))
+    return bytes(out + struct.pack(f"<{size}H", *table))
+
+
+def test_bfa_animations_move_under_the_ids_the_client_can_play():
+    # Haymaker (1444) and its wind-up (1446) into CustomSpell01/02 (213, 214), where this model
+    # has a BfA animation of its own already; 13 slots so the new ids probe past taken ones
+    bfa = _with_lookups(_model([(0, 0, 1000, 0x20, 0, 0), (14, 0, 1000, 0x20, 0, 0), (1444, 0, 867, 0xA1, 0, 0),
+                                (1446, 0, 1000, 0xA1, 0, 0), (214, 0, 500, 0x20, 0, 0), (0, 1, 2000, 0xA0, 0, 0)]), 13)
+    assert [anims.client_sequence(bfa, a) for a in (0, 14, 214)] == [0, 1, 4]
+    assert anims.client_sequence(bfa, 1444) == anims.NO_SEQUENCE          # past 505: the client plays none
+    out, changes = anims.renumber_sequences(bfa, {1444: 213, 1446: 214})
+    assert changes == ["1444 -> 213", "1446 -> 214", "214 parked (1446 takes its id)"]
+    assert [anims.client_sequence(out, a) for a in (0, 14, 213, 214)] == [0, 1, 2, 3]
+    assert anims.own_ids(out) == anims.own_ids(bfa) == {0, 14, 1444, 1446, 214}
+    # a rebuild puts every sequence back first: the same model again, or the new ids
+    assert anims.renumber_sequences(out, {1444: 213, 1446: 214})[0] == out
+    again, _ = anims.renumber_sequences(out, {1444: 215})
+    assert [anims.client_sequence(again, a) for a in (215, 214, 0, 14)] == [2, 4, 0, 1]
+    assert anims.client_sequence(again, 213) == anims.NO_SEQUENCE
+    assert anims.renumber_sequences(again, {})[0][:0x200 + 64 * 6] == bfa[:0x200 + 64 * 6]

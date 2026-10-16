@@ -55,6 +55,8 @@ class DBCFile:
         self.records: list[list[int]] = []
         self.string_block = bytearray(b"\x00")
         self.path: str | None = None
+        self._strings: dict[bytes, int] = {}
+        self._indexed: tuple[int, int] | None = None     # (id, length) of the block _strings indexes
 
     @classmethod
     def load(cls, path: str) -> "DBCFile":
@@ -95,12 +97,31 @@ class DBCFile:
         return self.string_block[offset:end].decode("latin-1")
 
     def add_string(self, s: str) -> int:
-        """Append a string to the string block; return its offset. Never rewrites existing strings."""
+        """The offset of ``s`` in the string block, appended only if the block doesn't already hold
+        it - so a table rebuilt over its own output (a race's rows stripped and added again) keeps
+        the block it had instead of growing a copy of their strings each time. Never rewrites
+        existing strings."""
         if not s:
             return 0
+        data = s.encode("latin-1")
+        if self._indexed != (id(self.string_block), len(self.string_block)):
+            self._index_strings()
+        offset = self._strings.get(data)
+        if offset is not None and self.string_block[offset:offset + len(data) + 1] == data + b"\x00":
+            return offset
         offset = len(self.string_block)
-        self.string_block += s.encode("latin-1") + b"\x00"
+        self.string_block += data + b"\x00"
+        self._strings[data] = offset
+        self._indexed = (id(self.string_block), len(self.string_block))
         return offset
+
+    def _index_strings(self) -> None:
+        """Map each string in the block to its first offset (never 0, which reads as empty)."""
+        self._strings, start = {}, 1
+        while (end := self.string_block.find(b"\x00", start)) >= 0:
+            self._strings.setdefault(bytes(self.string_block[start:end]), start)
+            start = end + 1
+        self._indexed = (id(self.string_block), len(self.string_block))
 
     # --- records ---
     def add_record(self, fields: list[int]) -> None:
@@ -193,6 +214,48 @@ class RawDBC:
         if len(record) != self.record_size:
             raise DBCError(f"record is {len(record)} bytes, expected {self.record_size}")
         self.records.append(bytes(record))
+
+    # --- uint32 tables kept raw (Spell.dbc: 52,000 rows of 234 fields stay bytes) ---
+    def add_row(self, fields: list[int]) -> None:
+        """A row of uint32 fields (floats already as their bits)."""
+        self.add_record(struct.pack(f"<{len(fields)}I", *(f & 0xFFFFFFFF for f in fields)))
+
+    def row(self, record: bytes) -> list[int]:
+        return list(struct.unpack(f"<{self.record_size // 4}I", record))
+
+    def find_by_id(self, record_id: int) -> bytes | None:
+        want = struct.pack("<I", record_id & 0xFFFFFFFF)
+        return next((r for r in self.records if r[:4] == want), None)
+
+    def max_id(self) -> int:
+        return max((struct.unpack_from("<I", r)[0] for r in self.records), default=0)
+
+    def get_string(self, offset: int) -> str:
+        if not 0 <= offset < len(self.string_block):
+            return ""
+        end = self.string_block.index(b"\x00", offset)
+        return self.string_block[offset:end].decode("utf-8", "replace")
+
+    def add_string(self, s: str) -> int:
+        """Offset of ``s`` in the string block, added at the end the first time (a 52 MB Spell.dbc's
+        block is indexed once, on the first new string)."""
+        if not s:
+            return 0
+        data = s.encode("utf-8")
+        index = getattr(self, "_strings", None)
+        if index is None or index[0] != len(self.string_block):
+            index = (len(self.string_block), {})
+            start = 1
+            while (end := self.string_block.find(b"\x00", start)) >= 0:
+                index[1].setdefault(bytes(self.string_block[start:end]), start)
+                start = end + 1
+        offset = index[1].get(data)
+        if offset is None:
+            offset = len(self.string_block)
+            self.string_block += data + b"\x00"
+            index[1][data] = offset
+        self._strings = (len(self.string_block), index[1])
+        return offset
 
     def to_bytes(self) -> bytes:
         return (struct.pack(HEADER_FORMAT, MAGIC, len(self.records), self.field_count, self.record_size,

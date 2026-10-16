@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from PIL import Image
 
-from .layouts import Layout, RemapGroup
+from .layouts import Layout, Rect, RemapGroup
 
 _RESAMPLE = Image.Resampling.LANCZOS
 
@@ -35,6 +35,20 @@ def convert_composite(img: Image.Image, src: Layout, dst: Layout, groups: list[R
                round((g.src.x + g.src.w) * sx), round((g.src.y + g.src.h) * sy))
         out.paste(img.crop(box).resize((g.dst.w, g.dst.h), _RESAMPLE), (g.dst.x, g.dst.y))
     return out
+
+
+def _pow2(n: int) -> int:
+    return 1 << max(0, (n - 1).bit_length())
+
+
+def extra_texture(img: Image.Image, src: Layout, rect: Rect) -> Image.Image:
+    """The part of a whole-layout texture (any resolution of ``src``) in ``rect`` (source-layout
+    pixels), as a texture of its own: power-of-two sides, the rectangle's own resolution (a
+    Pandaren's 256x192 corner of toes, pads and tail -> 256x256)."""
+    img = img.convert("RGBA")
+    sx, sy = _scale(img, src)
+    box = (round(rect.x * sx), round(rect.y * sy), round((rect.x + rect.w) * sx), round((rect.y + rect.h) * sy))
+    return img.crop(box).resize((_pow2(box[2] - box[0]), _pow2(box[3] - box[1])), _RESAMPLE)
 
 
 def group_for(section: int, groups: list[RemapGroup]) -> RemapGroup | None:
