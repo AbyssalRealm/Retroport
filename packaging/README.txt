@@ -13,7 +13,8 @@ Start
    "More info", then "Run anyway".)
 3. The first time, Settings opens: choose your 3.3.5a client folder (the one with Wow.exe).
    Optionally your server's dbc folder too, so Install adds the new items there as well.
-4. Pick items and sets (+), look them over in the Basket, then Backport > Install.
+4. Pick items and sets (+), look them over in the Basket, give them stats in Stats (item level,
+   classes, stats, sockets, sets...), then Backport > Install.
 
 
 What it needs
@@ -24,8 +25,10 @@ What it needs
     https://github.com/Kirazul/wow-retail-backport
     https://github.com/TheDaveCalaz/wxl-equip-plus
   If wago.tools is down, Settings can read your own retail install instead.
-- For the 3D pieces Equip Plus adds (chests, belts, legs... drawn as models), WarcraftXL and Equip
-  Plus installed in your client: https://github.com/WarcraftXL/wxl-core
+- Any 3.3.5a client. Optional: the extra 3D pieces (skirts, boot shells, belt buckles, 3D capes)
+  need WarcraftXL and Equip Plus in your client (https://github.com/WarcraftXL/wxl-core); Install
+  adds them only when your client has Equip Plus. With Equip Plus 1.3.0 or newer, plumes, ribbons
+  and chains can swing (live physics, experimental): turn it on in Settings.
 
 
 Where it keeps things

@@ -390,10 +390,34 @@ class Catalog:
         return len(hits), out
 
     # -- what the kit builds ------------------------------------------------------
+    def display_items(self) -> dict[int, list[int]]:
+        """display id -> the items that show it (by their default look first, then their versions)."""
+        idx = getattr(self, "_display_items", None)
+        if idx is None:
+            idx = defaultdict(list)
+            for r in self.items:
+                if r[F["display"]]:
+                    idx[r[F["display"]]].append(r[0])
+            for iid, versions in self.appearances.items():
+                for v in versions:
+                    if v[3] and iid not in idx[v[3]]:
+                        idx[v[3]].append(iid)
+            self._display_items = idx = dict(idx)
+        return idx
+
     def looks_for(self, entry: dict) -> tuple[list[dict], list[int]]:
         """A basket entry's looks as the kit selects them (one per display) and its items: a set's
         pieces, an item's every version, an item set's items' versions."""
         kind, eid = entry.get("kind"), entry.get("id")
+        if kind == "look":                              # one display, as the kit selects it (--display)
+            iid = (self.display_items().get(int(eid or 0)) or [None])[0]
+            r = self.by_id.get(iid) if iid else None
+            if r is None:
+                return [{"display": int(eid or 0), "item": 0, "slot": 0, "icon": entry.get("icon") or 0,
+                         "name": entry.get("name") or f"Look {eid}", "quality": entry.get("quality"), "label": "",
+                         "also": 0}], []
+            return [{"display": int(eid), "item": iid, "slot": r[F["slot"]], "icon": r[F["icon"]], "name": r[F["name"]],
+                     "quality": r[F["quality"]], "label": "", "also": 0}], [iid]
         if kind == "set":
             s = self.set_by_id.get(eid)
             if s is None:

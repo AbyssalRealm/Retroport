@@ -24,6 +24,14 @@ packed patch of that name would be. A kit whose client reader opens only MPQ fil
 module has no ``FolderArchive``) is handed our ``FolderArchive`` for those folders, in this process
 only - its files are not touched.
 
+And its ``prove-gates`` plants its defects where they can be seen. It picks models from the build's
+manifest, which also lists files the build made but doesn't ship (a shoulder's untrimmed source
+beside the trimmed variant the patch carries), and its "flying part" (M8) moves the first bone a
+model keys - which, in a trimmed variant, may carry no vertex of the mesh it ships. Either way the
+planted defect moves nothing the audit could see, and prove-gates calls the audit broken ("M8
+motion MISSED"). Shown only the shipped models whose first keyed bone moves a shipped vertex, it
+plants where the audit looks; the audit itself is not touched.
+
 usage: python -m retroport.workbench.kitlocal --bp <bp.py> [--retail <install> --dbd <WoWDBDefs\\definitions>
            --listfile <listfile.csv> --product wow --cache <dir>] -- <bp.py arguments>
 """
@@ -36,6 +44,7 @@ import io
 import os
 import re
 import runpy
+import struct
 import sys
 import threading
 from collections import Counter
@@ -220,6 +229,108 @@ def show_folder_patches(client) -> bool:
     return True
 
 
+MODEL_KINDS = ("helm", "shoulder", "weapon", "shield")
+
+
+def first_keyed_bone(body: bytes) -> int | None:
+    """The bone prove-gates' M8 moves: the first whose translation is keyed in sequence 0 (when that
+    sequence lives in the model) or in a global loop."""
+    nb, ob = struct.unpack_from("<II", body, 0x2C)
+    ns, so = struct.unpack_from("<II", body, 0x1C)
+    resident0 = ns and struct.unpack_from("<I", body, so + 0x0C)[0] & 0x20
+    for i in range(nb):
+        tr = ob + i * 88 + 0x10
+        gseq = struct.unpack_from("<h", body, tr + 2)[0]
+        nv, ov = struct.unpack_from("<II", body, tr + 12)
+        for s in (range(nv) if gseq >= 0 else ([0] if resident0 else [])):
+            if s < nv:
+                count, at = struct.unpack_from("<II", body, ov + s * 8)
+                if count and at + 12 <= len(body):
+                    return i
+    return None
+
+
+def moves_what_it_ships(body: bytes, skin: bytes) -> bool:
+    """Whether moving the model's first keyed bone moves a vertex its skin draws (a bone under it
+    moves with it)."""
+    bone = first_keyed_bone(body)
+    if bone is None:
+        return True                                      # nothing for M8 to move here: no harm
+    nb, ob = struct.unpack_from("<II", body, 0x2C)
+    parent = [struct.unpack_from("<h", body, ob + i * 88 + 8)[0] for i in range(nb)]
+
+    def under(b: int) -> bool:
+        for _ in range(nb):
+            if b == bone:
+                return True
+            if b < 0 or b >= nb:
+                return False
+            b = parent[b]
+        return False
+    nverts, ov = struct.unpack_from("<II", body, 0x3C)
+    n, o = struct.unpack_from("<II", skin, 0x04)          # the vertices this skin draws
+    for k in range(n):
+        v = struct.unpack_from("<H", skin, o + k * 2)[0]
+        if v >= nverts:
+            continue
+        at = ov + v * 48
+        weights, bones = body[at + 12:at + 16], body[at + 16:at + 20]
+        if any(weights[j] and under(bones[j]) for j in range(4)):
+            return True
+    return False
+
+
+def shipped_manifest(provegates, work: str) -> None:
+    """prove-gates shown only the shipped models a planted defect shows in (see the module doc)."""
+    import json as _json
+    import bpcore
+    import gates
+    import scan
+
+    shipped: dict = {}
+
+    def closure() -> set:
+        if "keys" not in shipped:
+            prj = bpcore.Project(work)
+            plan = _json.load(open(os.path.join(work, "build", "plan.json"), encoding="utf-8"))
+            want, _m = gates.closure(prj, plan, scan.load(prj))
+            shipped["keys"] = {k.lower() for k in want}
+        return shipped["keys"]
+
+    def visible(build: str, key: str, entry: dict) -> bool:
+        if entry.get("kind") not in MODEL_KINDS or not key.lower().endswith(".m2"):
+            return True
+        path = os.path.join(build, entry.get("path") or key)
+        try:
+            with open(path, "rb") as fh:
+                body = fh.read()
+            with open(path[:-3] + "00.skin", "rb") as fh:
+                skin = fh.read()
+            return moves_what_it_ships(body, skin)
+        except (OSError, struct.error):
+            return True
+
+    class _Json:
+        def __getattr__(self, name):
+            return getattr(_json, name)
+
+        @staticmethod
+        def load(fh, *a, **k):
+            data = _json.load(fh, *a, **k)
+            name = str(getattr(fh, "name", ""))
+            if name.lower().endswith("manifest.json") and isinstance(data, dict):
+                keep = closure()
+                build = os.path.dirname(name)
+                ok = {key: v for key, v in data.items() if (not keep or key.lower() in keep) and visible(build, key, v)}
+                if len(ok) < len(data):
+                    print(f"kitlocal: prove-gates plants where the audit can see it ({len(data) - len(ok)} manifest "
+                          "entries left out: built but not shipped, or a first keyed bone that moves no shipped vertex)",
+                          flush=True)
+                    data = ok
+            return data
+    provegates.json = _Json()
+
+
 def _write(dest: str, data: bytes) -> None:
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     part = f"{dest}.{threading.get_ident()}.local"
@@ -254,6 +365,12 @@ def main(argv: list[str] | None = None) -> int:
             print("kitlocal: the kit is shown the client's open-folder patches", flush=True)
     except ImportError:
         pass
+    if kit_args[:1] == ["prove-gates"] and "--work" in kit_args:
+        try:
+            import provegates
+            shipped_manifest(provegates, kit_args[kit_args.index("--work") + 1])
+        except ImportError:
+            pass
     local = None
     if a.retail:
         from .catalog import Source, SourceSpec

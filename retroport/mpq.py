@@ -63,6 +63,19 @@ def _decrypt(data: bytes, key: int) -> bytes:
     return struct.pack(f"<{n}I", *out) + data[n * 4:]
 
 
+def _encrypt(data: bytes, key: int) -> bytes:
+    """``_decrypt``'s inverse (the hash and block tables are stored encrypted)."""
+    n = len(data) // 4
+    out = []
+    s2 = 0xEEEEEEEE
+    for v in struct.unpack(f"<{n}I", data[:n * 4]):
+        s2 = (s2 + _CRYPT[0x400 + (key & 0xFF)]) & 0xFFFFFFFF
+        out.append((v ^ (key + s2)) & 0xFFFFFFFF)
+        key = ((((~key) << 0x15) + 0x11111111) | (key >> 0x0B)) & 0xFFFFFFFF
+        s2 = (v + s2 + (s2 << 5) + 3) & 0xFFFFFFFF
+    return struct.pack(f"<{n}I", *out) + data[n * 4:]
+
+
 class MPQError(ValueError):
     pass
 
@@ -177,6 +190,121 @@ class MPQ:
         if mask:
             raise MPQError(f"unsupported MPQ compression {data[0]:#x}")
         return body
+
+
+_EMPTY, _DELETED = 0xFFFFFFFF, 0xFFFFFFFE
+
+
+def _slot(hashes: list, name: str) -> int:
+    """Where ``name`` lives in a hash table, or the free slot it would take (MPQError: full)."""
+    n = len(hashes)
+    i = hash_string(name, 0) % n
+    a, b = hash_string(name, 1), hash_string(name, 2)
+    free = None
+    for _ in range(n):
+        ha, hb, _loc, _plat, blk = hashes[i]
+        if blk == _EMPTY:
+            return free if free is not None else i
+        if blk == _DELETED:
+            free = i if free is None else free
+        elif ha == a and hb == b:
+            return i
+        i = (i + 1) % n
+    if free is None:
+        raise MPQError("the archive's hash table is full")
+    return free
+
+
+def _tables(hashes: list, blocks: list) -> tuple[bytes, bytes]:
+    ht = b"".join(struct.pack("<IIHHI", *h) for h in hashes)
+    bt = b"".join(struct.pack("<IIII", *b) for b in blocks)
+    return _encrypt(ht, hash_string("(hash table)", 3)), _encrypt(bt, hash_string("(block table)", 3))
+
+
+def write_archive(path: str, files: dict[str, bytes], slots: int = 0) -> None:
+    """A new MPQ v1 archive holding ``files`` (stored, plus a ``(listfile)``)."""
+    files = dict(files)
+    files["(listfile)"] = "\r\n".join(n for n in files if n != "(listfile)").encode("latin-1")
+    n = slots or 16
+    while n < 2 * len(files):
+        n *= 2
+    hashes = [(_EMPTY, _EMPTY, 0xFFFF, 0xFF, _EMPTY)] * n
+    blocks, body, pos = [], bytearray(), 32
+    for name, data in files.items():
+        i = _slot(hashes, name)
+        hashes[i] = (hash_string(name, 1), hash_string(name, 2), 0, 0, len(blocks))
+        blocks.append((pos + len(body), len(data), len(data), _EXISTS))
+        body += data
+    ht, bt = _tables(hashes, blocks)
+    ht_pos = 32 + len(body)
+    header = struct.pack("<4sIIHHIIII", b"MPQ\x1a", 32, ht_pos + len(ht) + len(bt), 0, 3, ht_pos,
+                         ht_pos + len(ht), n, len(blocks))
+    with open(path + ".part", "wb") as fh:
+        fh.write(header + body + ht + bt)
+    os.replace(path + ".part", path)
+
+
+def add_files(path: str, files: dict[str, bytes]) -> None:
+    """Put ``files`` into an existing MPQ v1 archive, in place: each is written (stored) after the
+    archive's data - a name it already holds now points at the new copy - its ``(listfile)`` names
+    them, and new hash and block tables follow, the header changed last (until then the archive is
+    the one it was)."""
+    base = 0
+    with open(path, "r+b") as fh:
+        size = os.path.getsize(path)
+        while True:
+            fh.seek(base)
+            magic = fh.read(4)
+            if magic == b"MPQ\x1a":
+                break
+            if magic == b"MPQ\x1b":
+                fh.seek(base + 8)
+                base += struct.unpack("<I", fh.read(4))[0]
+                continue
+            base += 0x200
+            if base > size:
+                raise MPQError(f"{path}: no MPQ header")
+        fh.seek(base)
+        _m, hsize, _asize, fmt, shift, ht_pos, bt_pos, ht_n, bt_n = struct.unpack("<4sIIHHIIII", fh.read(32))
+        if fmt != 0:
+            raise MPQError(f"{path}: only MPQ v1 archives can be added to (this one is v{fmt + 1})")
+        fh.seek(base + ht_pos)
+        hashes = [list(struct.unpack_from("<IIHHI", t, i * 16))
+                  for t in [_decrypt(fh.read(ht_n * 16), hash_string("(hash table)", 3))] for i in range(ht_n)]
+        fh.seek(base + bt_pos)
+        blocks = [list(struct.unpack_from("<IIII", t, i * 16))
+                  for t in [_decrypt(fh.read(bt_n * 16), hash_string("(block table)", 3))] for i in range(bt_n)]
+        files = dict(files)
+        listed = None
+        lf = next((h for h in hashes if h[0] == hash_string("(listfile)", 1) and h[1] == hash_string("(listfile)", 2)
+                   and h[4] < len(blocks)), None)
+        if lf is not None:
+            mpq = MPQ(path)
+            try:
+                listed = (mpq.read("(listfile)") or b"").decode("latin-1")
+            finally:
+                mpq.close()
+            names = {x.strip().lower() for x in listed.splitlines() if x.strip()}
+            new = [n for n in files if n.lower() not in names]
+            files["(listfile)"] = (listed.rstrip("\r\n") + ("\r\n" if listed.strip() else "") +
+                                   "\r\n".join(new)).encode("latin-1") if new else listed.encode("latin-1")
+        end = max(size - base, ht_pos + ht_n * 16, bt_pos + bt_n * 16)
+        fh.seek(base + end)
+        for name, data in files.items():
+            i = _slot(hashes, name)
+            if hashes[i][4] in (_EMPTY, _DELETED):
+                hashes[i] = [hash_string(name, 1), hash_string(name, 2), 0, 0, len(blocks)]
+            else:
+                hashes[i][4] = len(blocks)
+            blocks.append([end, len(data), len(data), _EXISTS])
+            fh.write(data)
+            end += len(data)
+        ht, bt = _tables(hashes, blocks)
+        fh.write(ht + bt)
+        fh.truncate()
+        fh.seek(base)
+        fh.write(struct.pack("<4sIIHHIIII", b"MPQ\x1a", hsize, end + len(ht) + len(bt), 0, shift, end,
+                             end + len(ht), ht_n, len(blocks)))
 
 
 _STOCK_LOCALE_FIRST = ["patch-{loc}-3", "patch-3", "patch-{loc}-2", "patch-2", "patch-{loc}", "patch",

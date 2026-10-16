@@ -16,6 +16,13 @@ server - in one click, with a backup of everything it changes and an Undo.
 - **Collect** what you like in the **Basket**. It shows exactly what will be built - every look each
   entry brings, entries that overlap, and what's new or removed since your last install - so a
   mistake is easy to spot and remove (with Undo).
+- **Give them stats** in **Stats**: item level, required level, quality, armour type, which classes
+  may wear them, binding, stats, armour, weapon damage and speed, sockets and socket bonus,
+  durability, price - for every piece at once or one by one, while the piece's in-game tooltip shows
+  the result as you go. *Fill in* uses WotLK's own rules (its stat budget for the item level and slot,
+  split the way real WotLK items of the role split it, with armour, damage and durability as real
+  WotLK items have them), or copy any real WotLK item's numbers. **Item sets** with set bonuses too:
+  the bonuses come from your client's own item sets, with their in-game text.
 - **Install** with one button. It converts the basket for your client, installs the patch, adds the
   new items to your server's `Item.dbc` and `ItemDisplayInfo.dbc`, backs up everything it replaces,
   and can undo the whole install. It never touches your database: it shows the item SQL for you to
@@ -30,8 +37,8 @@ server - in one click, with a backup of everything it changes and an Undo.
    *More info*, then *Run anyway*.
 4. The first time, **Settings** opens. Choose your 3.3.5a client folder (the one with `Wow.exe`), and
    optionally your server's dbc folder. That's all the setup there is.
-5. Find items and sets, add them with **+**, look them over in **Basket**, then **Backport >
-   Install**. When it's done: apply the item SQL it shows to your world database, restart the
+5. Find items and sets, add them with **+**, look them over in **Basket**, give them stats in
+   **Stats**, then **Backport > Install**. When it's done: apply the item SQL it shows to your world database, restart the
    worldserver, and log in.
 
 ## What you need
@@ -40,10 +47,12 @@ server - in one click, with a backup of everything it changes and an Undo.
 - **The internet.** Retail's items, models and textures come from [wago.tools](https://wago.tools).
   The first Install also downloads the two programs that do the conversion from their authors'
   GitHub pages (see [Credits](#credits)).
-- **A 3.3.5a client.** A stock client shows ported weapons, helms, shoulders and the armour drawn on
-  the body. For the 3D pieces modern armour adds to chests, belts, legs, boots, gloves and cloaks,
-  install [WarcraftXL](https://github.com/WarcraftXL/wxl-core) and
-  [Equip Plus](https://github.com/TheDaveCalaz/wxl-equip-plus) in your client.
+- **A 3.3.5a client** - a stock one works: it shows ported weapons, shields, helms, shoulders and
+  every other slot's armour drawn on the body. *Optional:* the extra 3D pieces modern armour adds -
+  skirts, collars, boot shells, belt buckles, 3D capes - need
+  [WarcraftXL](https://github.com/WarcraftXL/wxl-core) and
+  [Equip Plus](https://github.com/TheDaveCalaz/wxl-equip-plus) in your client. Install adds them when
+  your client has Equip Plus, and leaves them out when it doesn't (Settings can turn them on or off).
 - **Optionally, an AzerothCore server** whose dbc folder you point it at, so the new items exist on
   the server too.
 
@@ -57,7 +66,9 @@ server - in one click, with a backup of everything it changes and an Undo.
   [community listfile](https://github.com/wowdev/wow-listfile)). The bodies the character view
   dresses come from BfA 8.3.7, the same way.
 - **Backport kit** - the project folder the conversion works in, and where its programs live (they
-  are fetched for you; point them elsewhere only to use your own copies).
+  are fetched for you; point them elsewhere only to use your own copies - Settings says when a copy is
+  too old for live physics). Equip Plus's 3D pieces (when your client has Equip Plus, always, or
+  never), and its live physics and better-fit options in your client.
 
 Everything the app keeps is in your user folder:
 
@@ -74,13 +85,27 @@ down.
 1. The first time, it downloads the conversion kit and Equip Plus's tools.
 2. It converts the basket - only what changed since the last build. Progress is ticked off step by
    step, and a step that fails stops it before anything is installed (the log says why).
-3. It installs: the patch and Equip Plus's pieces into your client's `Data` folder, the new rows into
-   your server's DBCs, and clears the client's cache. Everything it replaces is backed up first.
-4. You apply the item SQL it shows (a `SOURCE` line with a copy button) to your world database, and
-   restart the worldserver.
+3. It applies the Stats step: the items' stats into the item SQL, a changed armour type into the
+   client's and server's item tables, the item sets into their ItemSet tables.
+4. It installs: the patch (and Equip Plus's pieces, when your client has Equip Plus) into your
+   client's `Data` folder, the new rows into your server's DBCs, and clears the client's cache.
+   Everything it replaces is backed up first.
+5. You apply the item SQL it shows (`retroport-items.sql`: a `SOURCE` line with a copy button) to
+   your world database, and restart the worldserver.
 
 **Undo last install** puts back everything that install replaced and removes what it added. The
 basket remembers what's installed, so the next Install adds what's new and drops what you removed.
+
+**Coming from the Backport Helper?** The Workbench uses the same conversion project, and an Install
+builds exactly what's in the basket. Looks the project built before - with the Backport Helper -
+show at the top of the Basket: bring them into the basket to keep them in your game (Install waits
+until you've chosen). They're rebuilt as they were, with the same kit and Equip Plus steps.
+
+**Live physics.** Plumes, ribbons and chains can swing as in retail: the kit ports retail's own
+Domino physics engine, and Equip Plus 1.3.0 runs it in the client (experimental, off by default).
+Install writes each piece's physics data with Equip Plus 1.3.0's tools, and Settings has the switch
+(*Live physics*, saved in your client's `WXLExtendedEquipment.ini` - also in Equip Plus's F9 panel in
+game) next to its *better fit* options. Your client needs Equip Plus 1.3.0 or newer.
 
 ## Troubleshooting
 
@@ -93,6 +118,11 @@ basket remembers what's installed, so the next Install adds what's new and drops
 - **wago.tools is down** - Settings > *Where the items come from* > *My own install*.
 - **Install stopped** - open the log under the Install button; nothing was installed by that run.
   Close World of Warcraft before installing: it holds the files Install replaces.
+- **Install stopped at prove-gates: "M8 motion MISSED <- the gate is broken"** - a false alarm in
+  0.1.0 (the kit's self-test planted a fault in a part of a model the patch doesn't ship); 0.2.0
+  plants it where the check can see it. Update the app and Install again.
+- **Items are level 1 with no stats** - the conversion makes cosmetic copies; give them stats in
+  **Stats** and Install again (the Backport page says how many pieces still have none).
 - **No 3D preview** - the preview needs WebGL 2; update your graphics driver.
 
 ## Building from source

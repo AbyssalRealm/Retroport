@@ -26,7 +26,13 @@ has finished; started again while it runs, it opens another window on it. Its lo
   authors' GitHub at the commits this workbench is checked with (`retroport/workbench/deps.py`).
   The kit is always run through `kitlocal`, which shows it WarcraftXL's open-folder patches (as
   Equip Plus installs its pieces) when its own client reader doesn't know them - in that process
-  only, its files untouched.
+  only, its files untouched. Its `prove-gates` (which plants 8 known defects in a copy of the build
+  and expects the audit to catch each) is shown only the models a planted defect can show in: the
+  manifest also lists files the build made but doesn't ship (a shoulder's untrimmed source beside
+  its trimmed variant), and the "flying part" defect (M8) moves a model's first keyed bone, which a
+  trimmed variant may not skin a single vertex to. Planted there, the defect moves nothing the
+  audit reads and prove-gates calls the audit broken ("M8 motion MISSED"); the audit itself is not
+  touched.
 
 From a checkout: `python packaging/build_release.py --launcher-only` builds `Retroport Workbench.exe`
 next to the code (it runs the `pythonw` on PATH), or run `retroport workbench` / `Workbench.bat` in a
@@ -126,3 +132,65 @@ FileDataID (byte-identical). What the install can't give - another build, a tabl
 doesn't name, an encrypted file, the community listfile - still goes to wago.tools; each run
 ends with a count of what came from where. wago's tables also carry Blizzard's hotfixes, which an
 install's own tables don't (2 of ParticleColor's 2,122 rows at 12.1.5).
+
+## The Stats step
+
+The kit makes every look a cosmetic copy (its SQL says so: *any class, any race, level 1, no stats*),
+one item per retail display id (`ids.json` maps display -> entry). The Stats page
+(`static/stats.js`) gives each piece its game values, kept in `<data>/item-stats.json`: values set
+*for every piece* (`global`) apply unless a piece sets its own; stats, armour, damage, durability
+and price are stored per piece as numbers.
+
+- **Fill in** follows WotLK's rules, from `retroport/workbench/wotlk.py` - Wrath Classic's tables
+  (3.4.5.63697) on wago.tools, cached as one reference: the stat budget (`RandPropPoints`, by item
+  level, quality and slot group), weapon damage per second (`ItemDamageOneHand`, `TwoHand`,
+  `Ranged`, `Wand` and the caster tables), and armour, durability, speed and sell price as the real
+  items of the same class, subclass, slot and quality have them (the median at each item level, a
+  curve to interpolate). Stats are the budget split the way real items of the role split it, in
+  WotLK's costs (a point of Stamina 2/3, attack power 1/2, spell power 6/7; the 1.5-power sum):
+  an item-level-264 leather chest comes out Agility 159, Stamina 156, attack power 184 and two ratings
+  at 104/92, armour 665, durability 120 - Sanctified Shadowblade Breastplate has 162, 162, 184,
+  108/92, 665, 120. Caster weapons carry their power as spell power (2.41 x the slot-0 budget: 741
+  at 264, as Frozen Bonespike and Nibelung). A piece filled in follows its level, quality, type
+  and role as they change, until a number is edited by hand.
+- **Copy a WotLK item** takes a real item's numbers (`/api/stats/reference`: the reference's 26,550
+  equippable WotLK items, same slot first).
+- **Set bonuses** are spells the 3.3.5 client has: every bonus of its own `ItemSet.dbc`, its
+  `Spell.dbc` description with `$s1`, `$h`, `$d` and `$12345s1` filled in (`itemstats.spell_text`),
+  or any spell by id. **Socket bonuses** are the enchantments real WotLK items use as one.
+
+At Install, after the kit's steps (`Kit.hooks["built"]`): a piece whose armour type changed gets
+that subclass and material in the kit's `out/dbc/Item.dbc` (from the kit's own values, so it's
+idempotent), and the kit packs again when the table changed; `out/sql/retroport-items.sql` is the
+kit's SQL followed by one `UPDATE item_template` per piece - the file the Backport page shows. After
+the patches are placed (`Kit.hooks["installed"]`): the item sets (ids from 3000, kept per set in
+`<data>/item-set-ids.json`) are added to the client's own `ItemSet.dbc` - read from below the kit's
+patch - written *into* the kit's patch (`retroport.mpq.add_files`: the file is stored after the
+archive's data, new hash and block tables follow, the header is changed last), and merged into the
+server's `ItemSet.dbc` (backed up; Undo restores it).
+
+## Looks built outside the workbench
+
+The Backport Helper adds each selection to its project (`select --add`); the workbench uses the
+same project and selects exactly the basket. So `Kit.foreign_looks` lists the displays the
+project ever built (`ids.json` keeps them all) that the basket lacks and the workbench never chose
+(`workbench-basket.json` "known"): the Basket offers to bring them in (as `look` entries, selected
+with `--display`) or let them go (`/api/kit/let-go`), and Install waits until one is chosen.
+
+## Equip Plus
+
+Its 3D pieces need WarcraftXL with Equip Plus in the client
+(`Extensions\wxl-equip-plus\wxl-equip-plus.dll`). `KitSettings.equip_plus` is `auto` (run its
+converter when the client has it), `on` or `off`; without it the kit's patch alone is installed,
+which a stock client draws.
+
+**Live physics** (Equip Plus 1.3.0, experimental): the kit ports retail's Domino engine and
+documents the client-mod contract (its `references/client-extension.md` section 5); Equip Plus 1.3.0
+runs it, from `DBFilesClient\WXLEquipPlusPhysics.phy2`, which its converter (`physics_table.py`)
+writes into the Equip Plus patch from the kit's `.phys` data. So the converter Install runs must be
+1.3.0 or newer: `deps.PINNED` holds its commit, a fetched copy carries the commit it is
+(`.retroport-ref`) and is fetched again when the pin moves, and Settings flags a tools folder older
+than 1.3.0 (its `wxl.json`). The client's DLL is new enough when it names that table. The switch
+is the client's: `[Physics] Enabled` and `[Fit] RetargetPivots` / `RetargetScale` in
+`Extensions\wxl-equip-plus\WXLExtendedEquipment.ini`, which Settings changes in place
+(`Kit.set_equip_plus_options`: those keys only, a copy of the file kept the first time).

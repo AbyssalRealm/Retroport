@@ -135,3 +135,57 @@ def test_fresh_settings_read_retail_and_bfas_bodies_from_wago():
     assert st.problems() == ["choose your 3.3.5 client folder in Settings"]     # wago needs no DBDefs or listfile
     st.set_source("retail", "Retail", "X:\\nowhere", product="wow")
     assert any("not a game install" in p for p in st.problems())
+
+
+def test_prove_gates_is_shown_only_the_files_the_patch_ships(tmp_path, monkeypatch):
+    import sys
+    work = tmp_path / "work"
+    (work / "build").mkdir(parents=True)
+    (work / "build" / "plan.json").write_text("{}")
+    shipped = r"item\objectcomponents\shoulder\backport\x__s1.m2"
+    unshipped = r"item\objectcomponents\shoulder\backport\x.m2"           # the untrimmed source beside it
+    manifest = {shipped: {"kind": "shoulder"}, unshipped: {"kind": "shoulder"}}
+    (work / "build" / "manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setitem(sys.modules, "bpcore", types.SimpleNamespace(Project=lambda w: w))
+    monkeypatch.setitem(sys.modules, "scan", types.SimpleNamespace(load=lambda prj: {}))
+    monkeypatch.setitem(sys.modules, "gates", types.SimpleNamespace(closure=lambda prj, plan, sc: ({shipped.upper(): 1}, {})))
+    provegates = types.SimpleNamespace(json=json)
+    L.shipped_manifest(provegates, str(work))
+    with open(work / "build" / "manifest.json", encoding="utf-8") as fh:
+        assert list(provegates.json.load(fh)) == [shipped]
+    with open(work / "build" / "plan.json", encoding="utf-8") as fh:
+        assert provegates.json.load(fh) == {}                                 # every other file as it is
+    assert provegates.json.dumps({"a": 1}) == '{"a": 1}'
+
+
+def _model_with_two_bones():
+    """A minimal M2: sequence 0 in the model, bone 0 keyed (moves), bone 1 not; vertex 0 rides bone 0,
+    vertex 1 bone 1."""
+    import struct
+    b = bytearray(0x700)
+    struct.pack_into("<II", b, 0x1C, 1, 0x200)                     # sequences
+    struct.pack_into("<I", b, 0x200 + 0x0C, 0x20)                  # sequence 0 lives in the model
+    struct.pack_into("<II", b, 0x2C, 2, 0x300)                     # bones
+    for i in range(2):
+        at = 0x300 + i * 88
+        struct.pack_into("<h", b, at + 8, -1)                      # no parent
+        struct.pack_into("<hh", b, at + 0x10, 1, -1)               # translation: linear, no global loop
+        struct.pack_into("<II", b, at + 0x10 + 12, 1 if i == 0 else 0, 0x480)
+    struct.pack_into("<II", b, 0x480, 1, 0x500)                    # bone 0's one key...
+    struct.pack_into("<3f", b, 0x500, 0.0, 0.0, 0.0)
+    struct.pack_into("<II", b, 0x3C, 2, 0x600)                     # vertices
+    for v, bone in ((0, 0), (1, 1)):
+        at = 0x600 + v * 48
+        b[at + 12:at + 16] = bytes([255, 0, 0, 0])
+        b[at + 16:at + 20] = bytes([bone, 0, 0, 0])
+    return bytes(b)
+
+
+def test_prove_gates_skips_a_model_whose_moved_bone_draws_nothing():
+    import struct
+    body = _model_with_two_bones()
+    skin = lambda verts: b"SKIN" + struct.pack("<II", len(verts), 12) + b"".join(struct.pack("<H", v) for v in verts)
+    assert L.first_keyed_bone(body) == 0
+    assert L.moves_what_it_ships(body, skin([0, 1]))                # the moved bone carries a drawn vertex
+    assert not L.moves_what_it_ships(body, skin([1]))               # a trimmed skin: nothing it draws moves
+

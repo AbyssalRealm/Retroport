@@ -22,12 +22,15 @@
   <button class="nav on" data-view="items">Items</button>
   <button class="nav" data-view="sets">Sets &amp; collections</button>
   <button class="nav" data-view="basket">Basket <span class="count" id="basket-count">0</span></button>
+  <button class="nav" data-view="stats">Stats <span class="count warn" id="stats-state" hidden></span></button>
   <button class="nav" data-view="backport">Backport <span class="count" id="kit-state"></span></button>
   <button class="nav" data-view="settings">Settings <span class="count warn" id="settings-state" hidden>!</span></button>
   <div class="log" id="log" aria-live="polite"></div>
 </nav>
 
 <main id="main">
+  <div class="updated-banner" id="updated" hidden>The workbench was updated while it was running - close this window
+    and open the workbench again to use the new version.</div>
   <section class="view" id="view-items">
     <div class="filters" id="item-filters">
       <select id="f-slot" aria-label="Slot"><option value="">Any slot</option></select>
@@ -73,8 +76,37 @@
         <button class="btn" id="basket-go">Install these →</button>
       </div>
     </div>
+    <div id="basket-foreign"></div>
     <div id="basket-changes"></div>
     <div id="basket-list"></div>
+  </section>
+
+  <section class="view" id="view-stats" hidden>
+    <div class="page-head">
+      <div>
+        <h2>Item stats</h2>
+        <p class="muted">The backport kit makes every piece a level-1 cosmetic copy with no stats. Give them real
+          ones here: set what all pieces share, fill in the stats, then adjust any piece - the tooltip shows it as
+          it will look in game. Numbers follow WotLK's own items.</p>
+      </div>
+      <div class="head-actions">
+        <button class="btn" id="stats-go">Install these →</button>
+      </div>
+    </div>
+    <div class="panel bulk" id="stats-bulk"></div>
+    <div class="stats-grid">
+      <div class="panel stats-list" id="stats-list"></div>
+      <div class="panel stats-editor" id="stats-editor"></div>
+      <div class="stats-side"><div class="tooltip" id="stats-tooltip"></div><div class="muted small" id="stats-entry"></div></div>
+    </div>
+    <div class="panel stats-sets">
+      <div class="sets-head"><h3>Item sets</h3>
+        <div class="head-actions"><button class="btn ghost" id="sets-from-basket">Make sets from the basket's sets</button>
+          <button class="btn ghost" id="sets-new">New set</button></div></div>
+      <p class="muted small">A set's pieces show it in their tooltip, and wearing enough of them gives its bonuses - spells
+        your 3.3.5 client already has (every bonus of its own item sets), or any spell by its id.</p>
+      <div id="stats-sets"></div>
+    </div>
   </section>
 
   <section class="view" id="view-settings" hidden>
@@ -147,5 +179,6 @@
 <div class="toast" id="toast" role="status"></div>
 <script src="/static/viewer.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/stats.js"></script>
 </body>
 </html>

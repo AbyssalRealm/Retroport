@@ -23,7 +23,8 @@ from . import wago
 PINNED = {
     "kit": {"repo": "Kirazul/wow-retail-backport", "ref": "d086009108fec9cc07eab6a80a49f4b8ea8beb20",
             "entry": os.path.join("wow-retail-backport", "scripts", "bp.py"), "label": "the retail backport kit"},
-    "equip-plus": {"repo": "TheDaveCalaz/wxl-equip-plus", "ref": "c719e3fccf7453f0958800ad716750945a87b978",
+    # 1.3.0+: its converter writes the live-physics table (WXLEquipPlusPhysics.phy2) from the kit's data
+    "equip-plus": {"repo": "TheDaveCalaz/wxl-equip-plus", "ref": "ac7440c0db407b1dceb3573aa211cb6de68ee7c6",
                    "entry": os.path.join("tools", "backport_to_equipplus.py"), "label": "Equip Plus"},
 }
 _lock = threading.Lock()
@@ -39,7 +40,13 @@ def entry(data_dir: str, name: str) -> str:
 
 
 def have(data_dir: str, name: str) -> bool:
-    return os.path.isfile(entry(data_dir, name))
+    """The copy is here, at the pinned commit (a pin that moves on fetches it again)."""
+    try:
+        with open(os.path.join(folder(data_dir, name), ".retroport-ref"), encoding="utf-8") as fh:
+            ref = fh.read().strip()
+    except OSError:
+        return False
+    return ref == PINNED[name]["ref"] and os.path.isfile(entry(data_dir, name))
 
 
 def fetch(data_dir: str, name: str, say=print, get=wago.http_get) -> str:
@@ -56,6 +63,8 @@ def fetch(data_dir: str, name: str, say=print, get=wago.http_get) -> str:
         shutil.rmtree(part, ignore_errors=True)
         with open(tmp, "rb") as fh:
             unpack(fh.read(), part)
+        with open(os.path.join(part, ".retroport-ref"), "w", encoding="utf-8") as fh:
+            fh.write(p["ref"])
         shutil.rmtree(dest, ignore_errors=True)
         os.replace(part, dest)
         os.remove(tmp)

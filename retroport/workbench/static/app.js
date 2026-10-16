@@ -75,6 +75,7 @@ async function pollStatus() {
     return setTimeout(pollStatus, 3000);
   }
   const st = S.status, ready = st.sources.filter(s => s.state === "ready");
+  $("#updated").hidden = !st.updated;
   $("#log").textContent = [...st.problems.map(p => "! " + p), ...st.log.slice(-12)].join("\n");
   $("#settings-state").hidden = !st.problems.length;
   if (st.setup && !S.setupShown) { S.setupShown = true; show("settings"); }   // first run: where's the client?
@@ -351,7 +352,7 @@ async function saveBasket() {
 }
 function basketCounts(entries) {
   const n = kind => entries.filter(e => e.kind === kind).length;
-  return [[n("set"), "transmog set"], [n("itemset"), "item set"], [n("item"), "item"]]
+  return [[n("set"), "transmog set"], [n("itemset"), "item set"], [n("item"), "item"], [n("look"), "look"]]
     .filter(([c]) => c).map(([c, w]) => plural(c, w)).join(", ") || "nothing";
 }
 // an install's time stamp (20261014-193005) as "Oct 14, 19:30"
@@ -376,6 +377,7 @@ function openEntry(e, itemId = null) {
   const back = e.kind === "set" ? {id: e.id, kind: "transmog", name: e.name} : e.kind === "itemset" ? {id: e.id, kind: "itemset", name: e.name} : null;
   if (itemId != null) openItem(itemId, back);
   else if (e.kind === "item") openItem(e.id);
+  else if (e.kind === "look") { const it = ((e.looks || [])[0] || {}).item; if (it) openItem(it); }
   else openSet(e.id, e.kind === "itemset" ? "itemset" : "transmog");
 }
 function removeEntries(keys, what) {
@@ -411,16 +413,38 @@ async function renderBasket() {
     changes.push(el("div", {}, `The last install (${when(plan.installed_at)}) came from before the basket was tracked.`));
   }
   $("#basket-changes").replaceChildren(...(changes.length ? [el("div", {class: "panel changes"}, changes)] : []));
+  renderForeign();
   if (!n) {
     $("#basket-list").replaceChildren(el("div", {class: "empty"}, "Nothing picked yet. Use + on any item or set."));
     return;
   }
-  const groups = [["set", "Transmog sets"], ["itemset", "Item sets"], ["item", "Items"]];
+  const groups = [["set", "Transmog sets"], ["itemset", "Item sets"], ["item", "Items"], ["look", "Looks"]];
   $("#basket-list").replaceChildren(...groups.map(([kind, title]) => {
     const rows = plan.entries.filter(e => e.kind === kind);
     return rows.length ? el("div", {class: "basket-group"}, el("h3", {}, `${title} (${rows.length})`), rows.map(e => basketRow(e, plan))) : null;
   }).filter(Boolean));
   if (plan.entries.some(e => e.state === "loading")) setTimeout(() => { if (S.view === "basket") renderBasket(); }, 1500);
+}
+// looks the kit's project built outside the workbench (the Backport Helper adds to the same project)
+async function renderForeign() {
+  let foreign = [];
+  try { foreign = await api("/api/basket/foreign"); } catch (e) { /* no project yet */ }
+  const box = $("#basket-foreign");
+  if (!foreign.length) { box.replaceChildren(); return; }
+  box.replaceChildren(el("div", {class: "panel foreign"},
+    el("div", {}, el("b", {}, `Your backport project has ${plural(foreign.length, "look")} that aren't in your basket`),
+      " - made with the Backport Helper, or put in before the workbench kept track. An install builds what's in the basket, so ",
+      "it would take them out of your game. Bring them into the basket to keep them."),
+    el("div", {class: "strip"}, foreign.slice(0, 40).map(f => { const b = icon(f.icon, f.quality, "sm", f.source); b.title = f.name; return b; })),
+    el("div", {class: "actions"},
+      el("button", {class: "btn", onclick: () => {
+        for (const f of foreign) if (!inBasket(keyOf(f))) S.basket.push(f);
+        saveBasket(); toast(`${plural(foreign.length, "look")} back in the basket`);
+      }}, "Bring them into the basket"),
+      el("button", {class: "btn ghost", onclick: async () => {
+        if (!confirm(`Let ${plural(foreign.length, "look")} go? The next install takes them out of your game.`)) return;
+        try { await post("/api/kit/let-go", {looks: foreign.map(f => f.id)}); renderBasket(); } catch (e) { toast(e.message); }
+      }}, "Let them go"))));
 }
 function basketRow(e, plan) {
   const looks = e.looks;
@@ -516,11 +540,44 @@ function renderSettings() {
   $("#st-kit").replaceChildren(
     stField("work", "Project folder", k.work, {hint: "where the kit builds; Install makes it if it's new"}),
     stField("bp", "The kit (bp.py)", k.bp, {file: true, patterns: [["bp.py", "bp.py"]]}),
-    stField("tools", "Equip Plus tools folder", k.tools),
+    (() => {
+      const f = stField("tools", "Equip Plus tools folder", k.tools);
+      const old = v.checks.tools_version;
+      if (old) f.append(el("span", {class: "fcheck warn"}, "! " + old[1], " ",
+        el("button", {class: "btn ghost small-btn", type: "button", onclick: () => {
+          $("#st-tools").value = k.own_tools;
+          toast("Saved with Save - Install downloads that copy (its latest) the first time");
+        }}, "Use the workbench's own copy")));
+      return f;
+    })(),
     el("label", {class: "check"}, el("input", {type: "checkbox", id: "st-local", checked: k.local}),
        " The kit reads retail from my install when its project's build matches"),
+    (() => {
+      const found = v.checks.equip_plus;
+      return el("div", {class: "field"}, el("span", {class: "flabel"}, "3D armour pieces (Equip Plus)"),
+        el("span", {class: "frow"}, el("select", {id: "st-equip_plus"},
+          [["auto", "When my client has Equip Plus"], ["on", "Always"], ["off", "Never"]].map(([val, label]) =>
+            el("option", {value: val, selected: (k.equip_plus || "auto") === val}, label)))),
+        found ? el("span", {class: "fcheck " + (found[0] ? "ok" : "warn")}, (found[0] ? "✓ " : "! ") + found[1]) : null);
+    })(),
     el("label", {class: "check"}, el("input", {type: "checkbox", id: "st-armor_pieces", checked: k.armor_pieces}),
-       " Equip Plus: HD-skinned armour pieces too"));
+       " Equip Plus: HD-skinned armour pieces too"),
+    (() => {
+      const ep = v.equip_plus;
+      if (!ep || !ep.installed) return el("div", {class: "fhint muted"},
+        "Live physics and better fit are options of Equip Plus in your client - it isn't there.");
+      const box = (id, on, label, hint) => el("label", {class: "check", title: hint},
+        el("input", {type: "checkbox", id, checked: on, disabled: id === "st-ep-physics" && !ep.physics}), " " + label);
+      return el("div", {class: "field"},
+        el("span", {class: "flabel"}, "Equip Plus in your client (saved in its WXLExtendedEquipment.ini)"),
+        box("st-ep-physics", ep.options.physics, "Live physics (experimental): plumes, ribbons and chains swing",
+            "Retail's own physics engine, as the kit ports it - Equip Plus 1.3.0 runs it; also in its F9 panel in game"),
+        box("st-ep-pivots", ep.options.pivots, "Better fit: move retail pieces' parts to the body's matching bones", "[Fit] RetargetPivots"),
+        box("st-ep-scale", ep.options.scale, "Better fit: size retail pieces to the body's skeleton", "[Fit] RetargetScale"),
+        ep.physics ? el("span", {class: "fhint muted"}, "Pieces get their physics data when they're installed with Equip Plus 1.3.0's tools.")
+                   : el("span", {class: "fcheck warn"}, "! Your client's Equip Plus is older than 1.3.0 - live physics needs 1.3.0 " +
+                                                       "(github.com/TheDaveCalaz/wxl-equip-plus/releases)"));
+    })());
 }
 async function saveSettings() {
   const val = id => ($("#st-" + id) || {value: ""}).value.trim();
@@ -530,7 +587,9 @@ async function saveSettings() {
     bfa: {kind: kind("bfa"), path: val("bfa-path"), browse: $("#st-bfa-browse").checked},
     dbd: val("dbd"), listfile: val("listfile"),
     kit: {work: val("work"), bp: val("bp"), tools: val("tools"), local: $("#st-local").checked,
-          armor_pieces: $("#st-armor_pieces").checked}};
+          armor_pieces: $("#st-armor_pieces").checked, equip_plus: $("#st-equip_plus").value}};
+  if ($("#st-ep-physics")) body.equip_plus_options = {physics: $("#st-ep-physics").checked, pivots: $("#st-ep-pivots").checked,
+                                                       scale: $("#st-ep-scale").checked};
   $("#st-save").disabled = true;
   try {
     ST.v = await post("/api/settings", body);
@@ -609,9 +668,18 @@ function renderKit() {
       `your install is ${st.retail_build}, so its files come from wago.tools.`);
   }
   for (const p of st.problems) notes.push(`<span class="warn">!</span> Settings: ${p}`);
+  if (st.foreign) notes.push(`<span class="warn">!</span> Your backport project has ${plural(st.foreign, "look")} made outside the ` +
+    `workbench that aren't in your basket - <a href="#" data-go="basket">bring them in or let them go</a> first.`);
+  if (st.stats && st.stats.without) notes.push(`<span class="warn">!</span> ${st.stats.without} of ${plural(st.stats.pieces, "piece")} ` +
+    `have no stats yet - they'll be level-1 cosmetic copies. <a href="#" data-go="stats">Give them stats</a>`);
+  if (st.equip_plus && !st.equip_plus.wanted) notes.push(`Equip Plus isn't in your client: Install leaves out the extra 3D pieces ` +
+    `(skirts, boot shells, buckles, 3D capes); everything else works on any 3.3.5a client.`);
+  $("#stats-state").textContent = st.stats && st.stats.without ? st.stats.without : "";
+  $("#stats-state").hidden = !(st.stats && st.stats.without);
   $("#k-data").innerHTML = notes.join("<br>");
+  $$("#k-data a[data-go]").forEach(a => a.addEventListener("click", ev => { ev.preventDefault(); show(a.dataset.go); }));
 
-  $("#k-go").disabled = running || !n || st.problems.length > 0;
+  $("#k-go").disabled = running || !n || st.problems.length > 0 || !!st.foreign;
   $("#k-go").textContent = running && j.name === "go" ? "Installing…" : st.installed ? "Install again" : "Install";
   $("#k-stop").hidden = !running;
   $("#k-undo").disabled = running || !last;
@@ -965,6 +1033,7 @@ function show(view) {
   if (view === "basket") renderBasket();
   if (view === "backport") loadKit();
   if (view === "settings") openSettings();
+  if (view === "stats") loadStats();
   $("#q").placeholder = view === "sets" ? "Search sets by name, version or group   ( / )" : "Search items by name or id   ( / )";
 }
 function fill(sel, entries) {
@@ -1020,6 +1089,9 @@ async function init() {
   // the app (app.py) ends with its last page: say this one is open, now and then, and when it closes
   const hello = () => fetch("/api/hello", {method: "POST"}).catch(() => {});
   hello(); setInterval(hello, 30000);
+  setInterval(async () => {                               // code changed under a running server: say so
+    try { $("#updated").hidden = !(await api("/api/status")).updated; } catch (e) { /* not answering */ }
+  }, 30000);
   addEventListener("pageshow", e => { if (e.persisted) hello(); });
   addEventListener("pagehide", () => navigator.sendBeacon("/api/bye"));
 }

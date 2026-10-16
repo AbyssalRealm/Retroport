@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,7 @@ class KitSettings:
     tools: str = ""              # Equip Plus's tools folder (backport_to_equipplus.py, merge_server_dbc.py)
     local: bool = True           # retail from the local install when the project is pinned to its build
     armor_pieces: bool = True    # Equip Plus: also the pieces skinned to retail's HD skeletons
+    equip_plus: str = "auto"     # its 3D pieces: "auto" (when the client has Equip Plus), "on", "off"
 
 
 def _load_json(path: str, default=None):
@@ -118,11 +120,12 @@ def wow_running() -> bool:
 
 
 def basket_args(basket: list[dict]) -> list[str]:
-    """The kit's ``select`` arguments for a workbench basket (an item set: its pieces)."""
+    """The kit's ``select`` arguments for a workbench basket (an item set: its pieces; a look: its
+    retail display)."""
     out: list[str] = []
     for e in basket:
-        ids = [e["id"]] if e.get("kind") in ("set", "item") else list(e.get("items") or [])
-        flag = "--set" if e.get("kind") == "set" else "--item"
+        ids = [e["id"]] if e.get("kind") in ("set", "item", "look") else list(e.get("items") or [])
+        flag = {"set": "--set", "look": "--display"}.get(e.get("kind"), "--item")
         for i in ids:
             if [flag, str(i)] not in [out[k:k + 2] for k in range(0, len(out), 2)]:
                 out += [flag, str(i)]
@@ -157,6 +160,9 @@ class Kit:
         self._proc: subprocess.Popen | None = None
         self._lock = threading.Lock()
         self._retail_build = ""
+        # the workbench's steps around the kit's: "built" (after the kit's steps, before install;
+        # False stops) and "installed" (after the patches are in Data, before the server's tables)
+        self.hooks: dict[str, callable] = {}
 
     # -- state ------------------------------------------------------------------
     def project(self) -> dict | None:
@@ -202,13 +208,94 @@ class Kit:
         return sorted(f for f in os.listdir(d) if f.lower().endswith(".png"))
 
     def sql_files(self) -> list[str]:
+        """The item SQL to apply: the Stats step's file (the kit's SQL with the stats after it) when
+        it's newer than the kit's, else the kit's; and Equip Plus's brought-back items'."""
         out = []
-        for rel in (("out", "sql", "item_template.sql"), ("out", "equip-plus-rescue", "sql", "item_template.sql")):
-            p = os.path.join(self.cfg.work, *rel)
-            if os.path.isfile(p):
-                out.append(p)
+        kit = os.path.join(self.cfg.work, "out", "sql", "item_template.sql")
+        ours = os.path.join(self.cfg.work, "out", "sql", "retroport-items.sql")
+        if os.path.isfile(ours) and (not os.path.isfile(kit) or _mtime(ours) >= _mtime(kit)):
+            out.append(ours)
+        elif os.path.isfile(kit):
+            out.append(kit)
+        rescue = os.path.join(self.cfg.work, "out", "equip-plus-rescue", "sql", "item_template.sql")
+        if os.path.isfile(rescue):
+            out.append(rescue)
         return out
 
+    def client_root(self) -> str:
+        return os.path.dirname(os.path.normpath(self.cfg.client_data)) if self.cfg.client_data else ""
+
+    def equip_plus_installed(self) -> bool:
+        """Whether the client has WarcraftXL's Equip Plus (it draws the 3D pieces a stock client can't)."""
+        root = self.client_root()
+        return bool(root) and os.path.isfile(os.path.join(root, "Extensions", "wxl-equip-plus", "wxl-equip-plus.dll"))
+
+    def equip_plus_tools_version(self) -> str:
+        """The version of the Equip Plus tools Install runs (its wxl.json), "" when unknown."""
+        info = _load_json(os.path.join(os.path.dirname(os.path.normpath(self.cfg.tools)), "wxl.json"), {}) if self.cfg.tools else {}
+        return str(((info or {}).get("extension") or {}).get("version") or "")
+
+    def equip_plus_client(self) -> dict:
+        """The client's Equip Plus: there at all, its DLL new enough for live physics (1.3.0), and
+        the physics and fit options of its WXLExtendedEquipment.ini."""
+        root = self.client_root()
+        folder = os.path.join(root, "Extensions", "wxl-equip-plus") if root else ""
+        dll = os.path.join(folder, "wxl-equip-plus.dll")
+        out = {"installed": bool(folder) and os.path.isfile(dll), "physics": False, "ini": os.path.join(folder, INI_NAME) if folder else "",
+               "options": {"physics": False, "pivots": False, "scale": False}}
+        if out["installed"]:
+            try:
+                with open(dll, "rb") as fh:
+                    out["physics"] = b"WXLEquipPlusPhysics.phy2" in fh.read()
+            except OSError:
+                pass
+            ini = _read_ini(out["ini"])
+            out["options"] = {"physics": ini.get(("physics", "enabled")) == "1",
+                              "pivots": ini.get(("fit", "retargetpivots")) == "1",
+                              "scale": ini.get(("fit", "retargetscale")) == "1"}
+        return out
+
+    def set_equip_plus_options(self, physics: bool, pivots: bool, scale: bool) -> bool:
+        """Equip Plus's live physics and fit options in the client's WXLExtendedEquipment.ini - those
+        keys only, the rest of the file as it was (a copy of it kept the first time). True if changed."""
+        ep = self.equip_plus_client()
+        if not ep["installed"]:
+            return False
+        want = {("Physics", "Enabled"): physics, ("Fit", "RetargetPivots"): pivots, ("Fit", "RetargetScale"): scale}
+        if all(ep["options"][k] == v for k, v in zip(("physics", "pivots", "scale"), want.values())):
+            return False
+        path = ep["ini"]
+        if os.path.isfile(path) and not os.path.isfile(path + ".retroport-backup"):
+            shutil.copy2(path, path + ".retroport-backup")
+        _write_ini(path, {k: "1" if v else "0" for k, v in want.items()})
+        return True
+
+    def equip_plus_wanted(self) -> bool:
+        mode = (self.cfg.equip_plus or "auto").lower()
+        return mode == "on" or (mode == "auto" and self.equip_plus_installed())
+
+    # -- looks the project holds that the workbench didn't put there --------------------------
+    def built_looks(self) -> set[str]:
+        """Every retail display this project has built (the kit's ids.json keeps them all)."""
+        ids = _load_json(os.path.join(self.cfg.work, "ids.json"), {}) if self.cfg.work else {}
+        return {str(d) for d in (ids.get("display") or {})}
+
+    def known_looks(self) -> set[str]:
+        """The looks the workbench selected itself, or was told it may drop."""
+        rec = _load_json(os.path.join(self.cfg.work, "workbench-basket.json"), {}) if self.cfg.work else {}
+        return {str(d) for d in (rec or {}).get("known") or []}
+
+    def foreign_looks(self, basket_looks: set[str]) -> list[str]:
+        """Looks the project built - with the Backport Helper, or an earlier tool - that aren't in the
+        basket and that the workbench never chose: an Install would take them out of the game."""
+        return sorted(self.built_looks() - self.known_looks() - {str(d) for d in basket_looks}, key=int)
+
+    def let_go(self, looks) -> None:
+        """The user said those looks may go (they'll be dropped by the next install)."""
+        path = os.path.join(self.cfg.work, "workbench-basket.json")
+        rec = _load_json(path, {}) or {}
+        rec["known"] = sorted(set(map(str, rec.get("known") or [])) | {str(d) for d in looks}, key=int)
+        _save_json(path, rec)
     def fetched(self, name: str) -> bool:
         """Whether the setting for ``name`` is the copy the workbench fetches (Install gets it)."""
         mine = deps.entry(self.data_dir, name)
@@ -254,6 +341,7 @@ class Kit:
                 "retail_build": self.retail_build(), "local": self.local_ok(), "patch_name": self.patch_name(),
                 "steps": steps, "job": job, "sheets": self.sheets(), "sql": self.sql_files(),
                 "last_install": last, "next_line": self.first + len(self.lines), "selected": self.selected(),
+                "equip_plus": {"installed": self.equip_plus_installed(), "wanted": self.equip_plus_wanted()},
                 # the basket as it is: built (Install only copies), and in the client already
                 "built": built, "installed": bool(built and last and packed and last["time"] >= packed)}
 
@@ -399,12 +487,15 @@ class Kit:
             return False
         ok = self._run(["select", "--work", self.cfg.work, *args]) == 0
         if ok:
-            _save_json(os.path.join(self.cfg.work, "workbench-basket.json"),
-                       {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "basket": basket,
-                        "selection_mtime": _mtime(os.path.join(self.cfg.work, "selection.json"))})
+            sel = _load_json(os.path.join(self.cfg.work, "selection.json"), {}) or {}
+            path = os.path.join(self.cfg.work, "workbench-basket.json")
+            known = set(map(str, (_load_json(path, {}) or {}).get("known") or [])) | set(map(str, sel.get("displays") or {}))
+            _save_json(path, {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "basket": basket,
+                              "selection_mtime": _mtime(os.path.join(self.cfg.work, "selection.json")),
+                              "known": sorted(known, key=int)})
         return ok
 
-    def go(self, basket: list[dict]) -> bool:
+    def go(self, basket: list[dict], looks: set[str] | None = None) -> bool:
         """The basket into the client and the server in one go: a project if there's none, the kit's
         selection when the basket changed (which un-ticks every step after it), every step that hasn't
         passed, then the install."""
@@ -413,6 +504,12 @@ class Kit:
             return False
         if wow_running():
             self.say("!! close World of Warcraft first: the install replaces files it has open")
+            return False
+        foreign = self.foreign_looks(looks) if looks is not None else []
+        if foreign:
+            self.say(f"!! this project holds {len(foreign)} look(s) made outside the workbench (the Backport Helper?) "
+                     "that aren't in your basket - an install would take them out of your game. Add them to the "
+                     "basket (Basket page), or choose to let them go.")
             return False
         if not self.get_tools():
             return False
@@ -424,7 +521,11 @@ class Kit:
             self.say("The kit's selection is this basket already.")
         elif not self.select(basket):
             return False
-        return self.build(then="install") and self.install()
+        if not self.build(then="install"):
+            return False
+        if self.hooks.get("built") and not self.hooks["built"](self):
+            return False
+        return self.install()
 
     def scan(self) -> bool:
         """The kit's scan, with its own installed patch out of Data meanwhile (it must read the client
@@ -488,13 +589,18 @@ class Kit:
         # Equip Plus's 3D pieces (a folder patch of their own)
         ep_root = os.path.join(out, "equip-plus")
         before = set(os.listdir(ep_root)) if os.path.isdir(ep_root) else set()
-        code = self._tool("backport_to_equipplus.py", ["--work", c.work] + (["--armor-pieces"] if c.armor_pieces else []))
         ep_patch = None
+        if self.equip_plus_wanted():
+            code = self._tool("backport_to_equipplus.py", ["--work", c.work] + (["--armor-pieces"] if c.armor_pieces else []))
+        else:
+            code = None
+            self.say("   Equip Plus isn't in this client: its 3D pieces (skirts, boot shells, buckles, 3D capes) are "
+                     "left out - the items show as a stock client draws them")
         if code in (0, 2) and os.path.isdir(ep_root):
             made = [d for d in os.listdir(ep_root) if d.lower().startswith("patch-") and os.path.isdir(os.path.join(ep_root, d))]
             fresh = [d for d in made if d not in before] or made
             ep_patch = os.path.join(ep_root, sorted(fresh, key=lambda d: os.path.getmtime(os.path.join(ep_root, d)))[-1]) if fresh else None
-        elif code != 0:
+        elif code is not None and code != 0:
             self.say("   (no Equip Plus pieces were made - see above; the kit's patch installs on its own)")
 
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -520,6 +626,8 @@ class Kit:
             place(os.path.join(out, a), a)
         if ep_patch:
             place(ep_patch, os.path.basename(ep_patch))
+        if self.hooks.get("installed"):
+            self.hooks["installed"](self, record, backup)
         cache = os.path.join(os.path.dirname(c.client_data.rstrip("\\/")), "Cache")
         if os.path.isdir(cache):
             shutil.rmtree(cache, ignore_errors=True)
@@ -574,6 +682,73 @@ class Kit:
         self.say("Undone. Clear the client's Cache folder and restart the worldserver; the SQL rows stay "
                  "(they do nothing without the tables and patches).")
         return True
+
+
+INI_NAME = "WXLExtendedEquipment.ini"
+PHYSICS_VERSION = (1, 3, 0)                 # Equip Plus's first with live physics
+
+
+def version_tuple(text: str) -> tuple:
+    return tuple(int(x) for x in re.findall(r"\d+", text or "")[:3])
+
+
+def _read_ini(path: str) -> dict:
+    """{(section, key): value}, lowercased names; a missing file is empty."""
+    out, section = {}, ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                t = line.split(";", 1)[0].strip()
+                if t.startswith("[") and t.endswith("]"):
+                    section = t[1:-1].strip().lower()
+                elif "=" in t:
+                    k, v = t.split("=", 1)
+                    out[(section, k.strip().lower())] = v.strip()
+    except OSError:
+        pass
+    return out
+
+
+def _write_ini(path: str, values: dict) -> None:
+    """``values`` ({(Section, Key): value}) set in the INI at ``path``: a key it has keeps its line's
+    place (and comment), a missing one goes at the end of its section, a missing section at the end."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        lines = []
+    todo = dict(values)
+    section, last_of = "", {}
+    for i, line in enumerate(lines):
+        t = line.split(";", 1)[0].strip()
+        if t.startswith("[") and t.endswith("]"):
+            section = t[1:-1].strip()
+            last_of[section.lower()] = i
+            continue
+        if section:
+            last_of[section.lower()] = i
+        if "=" in t:
+            k = t.split("=", 1)[0].strip()
+            for (sec, key), v in list(todo.items()):
+                if sec.lower() == section.lower() and key.lower() == k.lower():
+                    comment = line[line.index(";"):] if ";" in line else ""
+                    lines[i] = f"{key}={v}" + (f"          {comment}" if comment else "")
+                    del todo[(sec, key)]
+    for (sec, key), v in todo.items():
+        at = last_of.get(sec.lower())
+        if at is None:
+            lines += ([""] if lines and lines[-1].strip() else []) + [f"[{sec}]"]
+            at = len(lines) - 1
+            last_of[sec.lower()] = at
+        lines.insert(at + 1, f"{key}={v}")
+        for s2, j in last_of.items():
+            if j > at:
+                last_of[s2] = j + 1
+        last_of[sec.lower()] = at + 1
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".part", "w", encoding="utf-8", newline="\r\n") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.replace(path + ".part", path)
 
 
 def _mtime(path: str) -> float | None:
