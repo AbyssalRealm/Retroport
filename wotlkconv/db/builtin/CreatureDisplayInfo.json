@@ -1,0 +1,22 @@
+{
+  "table": "CreatureDisplayInfo",
+  "description": "Links a display id to a model, its scale and its texture variations. This is the row a creature's display_id in the server database points at.",
+  "id_offset_columns": ["ID", "ModelID"],
+  "columns": [
+    {"target": ["TextureVariation", "TextureVariationFileName"],
+     "target_array_index": 0, "type": "string",
+     "from": "TextureVariationFileDataID", "array_index": 0,
+     "transform": "basename"},
+    {"target": ["TextureVariation", "TextureVariationFileName"],
+     "target_array_index": 1, "type": "string",
+     "from": "TextureVariationFileDataID", "array_index": 1,
+     "transform": "basename"},
+    {"target": ["TextureVariation", "TextureVariationFileName"],
+     "target_array_index": 2, "type": "string",
+     "from": "TextureVariationFileDataID", "array_index": 2,
+     "transform": "basename"},
+    {"target": ["PortraitTextureName", "PortraitTextureFileName"],
+     "type": "string", "from": "PortraitTextureFileDataID",
+     "transform": "basename"}
+  ]
+}
