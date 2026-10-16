@@ -1,0 +1,601 @@
+"""The retail backport kit, driven from the workbench: its project, its steps, install and undo.
+
+The kit (wow-retail-backport) and Equip Plus's tools are run as programs, never imported or
+copied: the kit through ``kitlocal`` (retail from the local install) when the project is pinned to
+that install's build, else as it is (wago.tools). What the console Backport Helper does, the page
+does the same way, so either can carry on from the other:
+
+* settings come from the helper's ``%USERPROFILE%\\.wxl-equip-plus\\helper.json`` (kit, client
+  Data, project, server dbc) unless the workbench's own settings say otherwise;
+* the steps are the kit's (its ledger ``<work>/reports/steps.json`` says which passed); a re-scan
+  moves the kit's own patch out of Data while it reads the client, as the helper does;
+* install backs up what it replaces under ``<work>/backups/<time>/`` with an ``install.json``
+  record (the helper's format, plus the basket it put in) and points the helper's ``last_backup``
+  at it, so either one's Undo puts it back. It converts the kit's 3D pieces for Equip Plus, places
+  the kit's patches, clears the client's Cache, and merges the server's Item/ItemDisplayInfo.dbc.
+  It never runs SQL: the item SQL is shown for you to apply.
+
+The page's Install button is ``go``: project, selection, steps and install in one job, each only
+when it's needed (an unchanged basket isn't selected or built again).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import asdict, dataclass, field
+
+from . import deps
+
+HELPER_SETTINGS = os.path.join(os.path.expanduser("~"), ".wxl-equip-plus", "helper.json")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+STEPS = ["fetch", "newtech", "measure", "build", "tables", "audit", "prove-gates", "pack", "sheet"]
+ORDER = ["scan", "select", *STEPS]
+STEP_WORDS = {
+    "scan": "Read the client (races, bodies, tables)",
+    "select": "Work out every file the selection needs",
+    "fetch": "Get the retail files",
+    "newtech": "Check for retail technology the kit doesn't know",
+    "measure": "Measure how helms sit on your bodies",
+    "build": "Convert models and textures",
+    "tables": "Write the item tables and server SQL",
+    "audit": "Check for crashes, holes, floating parts",
+    "prove-gates": "Prove the checks themselves work",
+    "pack": "Pack the patch",
+    "sheet": "Draw the preview pictures",
+}
+SERVER_TABLES = ("Item", "ItemDisplayInfo")
+
+
+@dataclass
+class KitSettings:
+    bp: str = ""                 # the kit's scripts\bp.py
+    work: str = ""               # the kit project folder
+    client_data: str = ""        # the 3.3.5 client's Data folder
+    server_dbc: str = ""         # the server's dbc folder ("" = leave the server alone)
+    tools: str = ""              # Equip Plus's tools folder (backport_to_equipplus.py, merge_server_dbc.py)
+    local: bool = True           # retail from the local install when the project is pinned to its build
+    armor_pieces: bool = True    # Equip Plus: also the pieces skinned to retail's HD skeletons
+
+
+def _load_json(path: str, default=None):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return default
+
+
+def _save_json(path: str, obj) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".part"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, indent=2)
+    os.replace(tmp, path)
+
+
+def helper_defaults(data_dir: str = "") -> KitSettings:
+    """The Backport Helper's settings as the kit's, where it has any; else the copies the workbench
+    fetches itself (``deps``) and a project folder of its own."""
+    h = _load_json(HELPER_SETTINGS, {}) or {}
+    kit = h.get("kit", "")
+    bp = os.path.join(kit, "wow-retail-backport", "scripts", "bp.py") if kit else ""
+    tools = os.path.join(REPO, "wxl-equip-plus", "tools")
+    if not os.path.isfile(bp):
+        bp = deps.entry(data_dir, "kit") if data_dir else ""
+    if not os.path.isdir(tools):
+        tools = os.path.dirname(deps.entry(data_dir, "equip-plus")) if data_dir else ""
+    work = h.get("work", "") or (os.path.join(data_dir, "backport-project") if data_dir else "")
+    return KitSettings(bp=bp, work=work, client_data=h.get("client_data", ""), server_dbc=h.get("server_dbc", ""),
+                       tools=tools, armor_pieces=bool(h.get("armor_pieces", True)))
+
+
+def python_exe() -> str:
+    """The Python the kit and Equip Plus's tools run with: this one - its console twin when this is
+    pythonw (the workbench without a window of its own), so their output can be read."""
+    exe = sys.executable
+    if os.path.basename(exe).lower() == "pythonw.exe":
+        twin = os.path.join(os.path.dirname(exe), "python.exe")
+        if os.path.isfile(twin):
+            return twin
+    return exe
+
+
+def wow_running() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Wow.exe"], capture_output=True, text=True).stdout
+        return "wow.exe" in out.lower()
+    except OSError:
+        return False
+
+
+def basket_args(basket: list[dict]) -> list[str]:
+    """The kit's ``select`` arguments for a workbench basket (an item set: its pieces)."""
+    out: list[str] = []
+    for e in basket:
+        ids = [e["id"]] if e.get("kind") in ("set", "item") else list(e.get("items") or [])
+        flag = "--set" if e.get("kind") == "set" else "--item"
+        for i in ids:
+            if [flag, str(i)] not in [out[k:k + 2] for k in range(0, len(out), 2)]:
+                out += [flag, str(i)]
+    return out
+
+
+@dataclass
+class Job:
+    name: str
+    state: str = "running"       # running, ok, failed, stopped
+    started: float = field(default_factory=time.time)
+    ended: float = 0.0
+    step: str = ""
+
+
+class Kit:
+    """The kit project the workbench drives. One job at a time; its output goes to ``lines``."""
+
+    def __init__(self, own: dict | None, retail: dict | None, dbd: str, listfile: str, data_dir: str,
+                 save: callable = lambda kit_settings: None):
+        base = helper_defaults(data_dir)
+        for k, v in (own or {}).items():
+            if hasattr(base, k) and v not in ("", None):
+                setattr(base, k, v)
+        self.cfg = base
+        self.retail = retail                   # the retail SourceSpec (dict), or None
+        self.dbd, self.listfile, self.data_dir = dbd, listfile, data_dir
+        self._save = save
+        self.lines: list[str] = []
+        self.first = 0                          # index of lines[0] (old lines are dropped)
+        self.job: Job | None = None
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+        self._retail_build = ""
+
+    # -- state ------------------------------------------------------------------
+    def project(self) -> dict | None:
+        return _load_json(os.path.join(self.cfg.work, "bp.json")) if self.cfg.work else None
+
+    def ledger(self) -> dict:
+        return _load_json(os.path.join(self.cfg.work, "reports", "steps.json"), {}) or {}
+
+    def retail_build(self) -> str:
+        if not self._retail_build and self.retail:
+            try:
+                from pathlib import Path
+                from wotlkconv.casc.config import BuildInfo
+                b = BuildInfo.load(Path(self.retail["path"]), self.retail.get("product"))
+                self._retail_build = b.version or ""
+            except Exception:
+                self._retail_build = ""
+        return self._retail_build
+
+    def local_ok(self) -> bool:
+        prj = self.project() or {}
+        return bool(self.cfg.local and self.retail and prj.get("build") and prj.get("build") == self.retail_build())
+
+    def patch_name(self) -> str:
+        prj = self.project() or {}
+        scan = _load_json(os.path.join(self.cfg.work, "client", "scan.json"), {}) or {}
+        return prj.get("patch_name") or scan.get("patch_name") or ""
+
+    def last_install(self) -> dict | None:
+        root = os.path.join(self.cfg.work, "backups")
+        if not os.path.isdir(root):
+            return None
+        for stamp in sorted(os.listdir(root), reverse=True):
+            rec = _load_json(os.path.join(root, stamp, "install.json"))
+            if rec:
+                return rec | {"backup": os.path.join(root, stamp)}
+        return None
+
+    def sheets(self) -> list[str]:
+        d = os.path.join(self.cfg.work, "sheets")
+        if not os.path.isdir(d):
+            return []
+        return sorted(f for f in os.listdir(d) if f.lower().endswith(".png"))
+
+    def sql_files(self) -> list[str]:
+        out = []
+        for rel in (("out", "sql", "item_template.sql"), ("out", "equip-plus-rescue", "sql", "item_template.sql")):
+            p = os.path.join(self.cfg.work, *rel)
+            if os.path.isfile(p):
+                out.append(p)
+        return out
+
+    def fetched(self, name: str) -> bool:
+        """Whether the setting for ``name`` is the copy the workbench fetches (Install gets it)."""
+        mine = deps.entry(self.data_dir, name)
+        path = self.cfg.bp if name == "kit" else os.path.join(self.cfg.tools, os.path.basename(mine))
+        return os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(mine))
+
+    def problems(self) -> list[str]:
+        c = self.cfg
+        out = []
+        if not c.bp or not (os.path.isfile(c.bp) or self.fetched("kit")):
+            out.append("the kit's bp.py is not set")
+        if not c.work:
+            out.append("no project folder set")
+        if not c.client_data or not os.path.isdir(c.client_data):
+            out.append("the client's Data folder is not set")
+        if sys.version_info < (3, 11):
+            out.append("the kit needs Python 3.11 or newer")
+        return out
+
+    def selected(self) -> dict | None:
+        """The basket the kit's selection was made from - while the selection is still that one (the
+        console helper may have selected something else since)."""
+        rec = _load_json(os.path.join(self.cfg.work, "workbench-basket.json")) if self.cfg.work else None
+        if not rec or rec.get("selection_mtime") != _mtime(os.path.join(self.cfg.work, "selection.json")):
+            return None
+        return rec
+
+    def selected_matches(self, basket: list[dict]) -> bool:
+        rec = self.selected()
+        return bool(rec and self.ledger().get("select", {}).get("ok")) and \
+            _arg_pairs(basket_args(rec["basket"])) == _arg_pairs(basket_args(basket))
+
+    def status(self, basket: list[dict] | None = None) -> dict:
+        prj = self.project()
+        led = self.ledger()
+        steps = [{"step": s, "words": STEP_WORDS[s], "ok": led.get(s, {}).get("ok"), "at": led.get(s, {}).get("at", "")}
+                 for s in ORDER]
+        job = asdict(self.job) if self.job else None
+        last = self.last_install()
+        built = basket is not None and self.selected_matches(basket) and all(led.get(s, {}).get("ok") for s in STEPS)
+        packed = led.get("pack", {}).get("at", "").replace("-", "").replace(":", "").replace(" ", "-")
+        return {"settings": asdict(self.cfg), "problems": self.problems(), "project": prj,
+                "retail_build": self.retail_build(), "local": self.local_ok(), "patch_name": self.patch_name(),
+                "steps": steps, "job": job, "sheets": self.sheets(), "sql": self.sql_files(),
+                "last_install": last, "next_line": self.first + len(self.lines), "selected": self.selected(),
+                # the basket as it is: built (Install only copies), and in the client already
+                "built": built, "installed": bool(built and last and packed and last["time"] >= packed)}
+
+    def set_settings(self, values: dict) -> None:
+        for k, v in values.items():
+            if k in KitSettings.__dataclass_fields__:
+                setattr(self.cfg, k, bool(v) if isinstance(getattr(self.cfg, k), bool) else str(v or "").strip())
+        self._save(asdict(self.cfg))
+
+    # -- output -----------------------------------------------------------------
+    def say(self, text: str) -> None:
+        with self._lock:
+            for line in str(text).splitlines() or [""]:
+                self.lines.append(line)
+            if len(self.lines) > 6000:
+                drop = len(self.lines) - 5000
+                del self.lines[:drop]
+                self.first += drop
+
+    def log_since(self, since: int) -> dict:
+        with self._lock:
+            start = max(since - self.first, 0)
+            return {"lines": self.lines[start:], "next": self.first + len(self.lines),
+                    "job": asdict(self.job) if self.job else None}
+
+    # -- running ----------------------------------------------------------------
+    def kit_command(self, args: list[str], local: bool | None = None) -> list[str]:
+        """The kit run through ``kitlocal``: retail from the local install when ``local``, and the
+        client's open-folder patches shown to it either way."""
+        local = self.local_ok() if local is None else local
+        cmd = [python_exe(), "-u", "-m", "retroport.workbench.kitlocal", "--bp", self.cfg.bp]
+        if local and self.retail:
+            cmd += ["--retail", self.retail["path"], "--product", self.retail.get("product") or "wow",
+                    "--dbd", self.dbd, "--listfile", self.listfile, "--cache", os.path.join(self.data_dir, "cache")]
+        return cmd + ["--", *args]
+
+    def _run(self, args: list[str], step: str = "", local: bool | None = None, cwd: str | None = None) -> int:
+        local = self.local_ok() if local is None else local
+        cmd = self.kit_command(args, local)
+        self.say(f"$ bp.py {' '.join(args)}" + ("   [retail from the local install]" if local and self.retail else ""))
+        if self.job:
+            self.job.step = step or args[0]
+        env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+        env["PYTHONPATH"] = REPO + os.pathsep + env.get("PYTHONPATH", "")
+        proc = subprocess.Popen(cmd, cwd=cwd or os.path.dirname(self.cfg.bp), stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=env,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self._proc = proc
+        for line in proc.stdout:
+            self.say(line.rstrip("\n"))
+        code = proc.wait()
+        self._proc = None
+        return code
+
+    def _tool(self, script: str, args: list[str]) -> int:
+        """One of Equip Plus's tools, as a program."""
+        path = os.path.join(self.cfg.tools, script)
+        if not os.path.isfile(path):
+            self.say(f"!! {script} not found in {self.cfg.tools or '(Equip Plus tools folder not set)'}")
+            return 1
+        self.say(f"$ {script} {' '.join(args)}")
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        env["PYTHONPATH"] = REPO + os.pathsep + env.get("PYTHONPATH", "")
+        proc = subprocess.Popen([python_exe(), "-u", "-m", "retroport.workbench.runscript", path, *args],
+                                cwd=self.cfg.tools, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=env,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self._proc = proc
+        for line in proc.stdout:
+            self.say("    " + line.rstrip("\n"))
+        code = proc.wait()
+        self._proc = None
+        return code
+
+    def busy(self) -> bool:
+        return bool(self.job and self.job.state == "running")
+
+    def start(self, name: str, fn, *args) -> None:
+        if self.busy():
+            raise RuntimeError(f"the kit is busy ({self.job.name})")
+        problems = [p for p in self.problems() if not (name == "create" and "project" in p)]
+        if problems:
+            raise RuntimeError("; ".join(problems))
+        self.job = Job(name)
+        self.say("")
+        self.say(f"=== {name} ({time.strftime('%H:%M:%S')}) ===")
+
+        def body():
+            try:
+                ok = fn(*args)
+                if self.job.state == "running":
+                    self.job.state = "ok" if ok else "failed"
+            except Exception as e:                   # the page shows it; the server stays up
+                self.say(f"!! {type(e).__name__}: {e}")
+                self.job.state = "failed"
+            finally:
+                self.job.ended = time.time()
+                self.say(f"=== {name}: {self.job.state} ===")
+        threading.Thread(target=body, name=f"kit-{name}", daemon=True).start()
+
+    def stop(self) -> None:
+        if self.job and self.job.state == "running":
+            self.job.state = "stopped"
+            if self._proc:
+                self._proc.terminate()
+            self.say("!! stopped")
+
+    # -- jobs -------------------------------------------------------------------
+    def get_tools(self) -> bool:
+        """The kit and Equip Plus, downloaded from their GitHub where the settings point at the
+        workbench's own copies and those aren't here yet."""
+        for name in ("kit", "equip-plus"):
+            if self.fetched(name) and not deps.have(self.data_dir, name):
+                if self.job:
+                    self.job.step = "tools"
+                try:
+                    deps.fetch(self.data_dir, name, self.say)
+                except Exception as e:
+                    self.say(f"!! {deps.PINNED[name]['label']} could not be downloaded: {e}")
+                    return False
+        return True
+
+    def create(self) -> bool:
+        """A new project pinned to the local retail build (so the kit reads retail from it)."""
+        c = self.cfg
+        if not c.work:
+            self.say("!! choose a project folder first")
+            return False
+        if self.project():
+            self.say(f"the project already exists: {c.work}")
+            return True
+        args = ["init", "--work", c.work, "--client", c.client_data, "--server", "azerothcore"]
+        if self.retail_build():
+            args += ["--build", self.retail_build()]
+        return self._run(args, local=False) == 0
+
+    def select(self, basket: list[dict]) -> bool:
+        args = basket_args(basket)
+        if not args:
+            self.say("!! the basket is empty")
+            return False
+        if not self.ledger().get("scan", {}).get("ok") and not self.scan():
+            return False
+        ok = self._run(["select", "--work", self.cfg.work, *args]) == 0
+        if ok:
+            _save_json(os.path.join(self.cfg.work, "workbench-basket.json"),
+                       {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "basket": basket,
+                        "selection_mtime": _mtime(os.path.join(self.cfg.work, "selection.json"))})
+        return ok
+
+    def go(self, basket: list[dict]) -> bool:
+        """The basket into the client and the server in one go: a project if there's none, the kit's
+        selection when the basket changed (which un-ticks every step after it), every step that hasn't
+        passed, then the install."""
+        if not basket_args(basket):
+            self.say("!! the basket is empty")
+            return False
+        if wow_running():
+            self.say("!! close World of Warcraft first: the install replaces files it has open")
+            return False
+        if not self.get_tools():
+            return False
+        if not self.project():
+            self.job.step = "create"
+            if not self.create():
+                return False
+        if self.selected_matches(basket):
+            self.say("The kit's selection is this basket already.")
+        elif not self.select(basket):
+            return False
+        return self.build(then="install") and self.install()
+
+    def scan(self) -> bool:
+        """The kit's scan, with its own installed patch out of Data meanwhile (it must read the client
+        without it - the helper does the same)."""
+        data, name = self.cfg.client_data, self.patch_name()
+        held = []
+        hold = os.path.join(self.cfg.work, "backups", "scan-hold")
+        if name and os.path.exists(os.path.join(data, name)):
+            if wow_running():
+                self.say("!! close World of Warcraft first: the kit's patch must move aside while it reads the client")
+                return False
+            os.makedirs(hold, exist_ok=True)
+            shutil.move(os.path.join(data, name), os.path.join(hold, name))
+            held.append(name)
+            self.say(f"   {name} moved aside while the kit reads the client")
+        try:
+            return self._run(["scan", "--work", self.cfg.work], step="scan") == 0
+        finally:
+            for n in held:
+                shutil.move(os.path.join(hold, n), os.path.join(data, n))
+                self.say(f"   {n} put back")
+
+    def build(self, rerun: str = "", then: str = "") -> bool:
+        """Every step the ledger doesn't show passed, in order (``rerun``: that step and the ones after
+        it again; ``then``: what comes next, for the last line)."""
+        if not self.ledger().get("select", {}).get("ok"):
+            self.say("!! nothing selected yet: send the basket to the kit first")
+            return False
+        if rerun == "scan" or not self.ledger().get("scan", {}).get("ok"):
+            if not self.scan():
+                return False
+        again = STEPS[STEPS.index(rerun):] if rerun in STEPS else []
+        for step in STEPS:
+            if self.job.state != "running":
+                return False
+            if self.ledger().get(step, {}).get("ok") and step not in again:
+                continue
+            extra = ["--extension"] if step == "build" else []
+            if self._run([step, "--work", self.cfg.work, *extra], step=step) != 0 or \
+                    not self.ledger().get(step, {}).get("ok"):
+                self.say(f"!! {step} did not pass - its log: {os.path.join(self.cfg.work, 'logs', step + '.log')}")
+                return False
+        self.say("Built." if then else "Built. Look at every preview picture before installing.")
+        return True
+
+    def install(self) -> bool:
+        c = self.cfg
+        if self.job:
+            self.job.step = "install"
+        if not self.ledger().get("pack", {}).get("ok"):
+            self.say("!! nothing packed yet: build first")
+            return False
+        if wow_running():
+            self.say("!! close World of Warcraft first")
+            return False
+        out = os.path.join(c.work, "out")
+        archives = sorted(f for f in os.listdir(out) if f.lower().endswith(".mpq") and os.path.isfile(os.path.join(out, f)))
+        if not archives:
+            self.say("!! the kit's out folder holds no patch")
+            return False
+        # Equip Plus's 3D pieces (a folder patch of their own)
+        ep_root = os.path.join(out, "equip-plus")
+        before = set(os.listdir(ep_root)) if os.path.isdir(ep_root) else set()
+        code = self._tool("backport_to_equipplus.py", ["--work", c.work] + (["--armor-pieces"] if c.armor_pieces else []))
+        ep_patch = None
+        if code in (0, 2) and os.path.isdir(ep_root):
+            made = [d for d in os.listdir(ep_root) if d.lower().startswith("patch-") and os.path.isdir(os.path.join(ep_root, d))]
+            fresh = [d for d in made if d not in before] or made
+            ep_patch = os.path.join(ep_root, sorted(fresh, key=lambda d: os.path.getmtime(os.path.join(ep_root, d)))[-1]) if fresh else None
+        elif code != 0:
+            self.say("   (no Equip Plus pieces were made - see above; the kit's patch installs on its own)")
+
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = os.path.join(c.work, "backups", stamp)
+        sel = self.selected()
+        record = {"time": stamp, "client": [], "server": [], "added": [], "by": "retroport workbench",
+                  "basket": sel["basket"] if sel else None}          # what the patch holds, for the basket page
+        os.makedirs(os.path.join(backup, "client"), exist_ok=True)
+
+        def place(src: str, name: str) -> None:
+            dest = os.path.join(c.client_data, name)
+            if os.path.exists(dest):
+                _copy_any(dest, os.path.join(backup, "client", name))
+                record["client"].append(name)
+                _remove_any(dest)
+            else:
+                record["added"].append(dest)
+            _copy_any(src, dest)
+            self.say(f"   installed {name}")
+
+        self.say(f"Backing up and installing (backup: {backup})")
+        for a in archives:
+            place(os.path.join(out, a), a)
+        if ep_patch:
+            place(ep_patch, os.path.basename(ep_patch))
+        cache = os.path.join(os.path.dirname(c.client_data.rstrip("\\/")), "Cache")
+        if os.path.isdir(cache):
+            shutil.rmtree(cache, ignore_errors=True)
+            self.say("   cleared the client's Cache folder")
+        if c.server_dbc:
+            merged = os.path.join(out, "server-dbc")
+            if self._tool("merge_server_dbc.py", ["--work", c.work, "--server", c.server_dbc, "--out", merged]) == 0:
+                os.makedirs(os.path.join(backup, "server"), exist_ok=True)
+                for name in SERVER_TABLES:
+                    dest = os.path.join(c.server_dbc, name + ".dbc")
+                    shutil.copy2(dest, os.path.join(backup, "server", name + ".dbc"))
+                    shutil.copy2(os.path.join(merged, name + ".dbc"), dest)
+                    record["server"].append(name + ".dbc")
+                    self.say(f"   server: updated {name}.dbc")
+            else:
+                self.say("!! the server merge failed - the server's dbc folder was not touched")
+        _save_json(os.path.join(backup, "install.json"), record)
+        helper = _load_json(HELPER_SETTINGS, None)
+        if isinstance(helper, dict) and helper.get("work") and os.path.normcase(os.path.abspath(helper["work"])) == \
+                os.path.normcase(os.path.abspath(c.work)):
+            helper["last_backup"] = backup                     # the helper's Undo knows this install too
+            _save_json(HELPER_SETTINGS, helper)
+        self.say("Installed. Restart the worldserver, then log in.")
+        for sql in self.sql_files():
+            self.say(f"Apply this SQL to your world database yourself: {sql}")
+        return True
+
+    def undo(self) -> bool:
+        rec = self.last_install()
+        if not rec:
+            self.say("there is no install to undo")
+            return False
+        if wow_running():
+            self.say("!! close World of Warcraft first")
+            return False
+        backup, c = rec["backup"], self.cfg
+        for n in rec.get("client", []):
+            _remove_any(os.path.join(c.client_data, n))
+            _copy_any(os.path.join(backup, "client", n), os.path.join(c.client_data, n))
+            self.say(f"   client: put back {n}")
+        for p in rec.get("added", []):
+            _remove_any(p)
+            self.say(f"   client: removed {p}")
+        for n in rec.get("server", []):
+            shutil.copy2(os.path.join(backup, "server", n), os.path.join(c.server_dbc, n))
+            self.say(f"   server: put back {n}")
+        os.replace(os.path.join(backup, "install.json"), os.path.join(backup, "install.json.undone"))
+        helper = _load_json(HELPER_SETTINGS, None)
+        if isinstance(helper, dict) and helper.get("last_backup") == backup:
+            helper["last_backup"] = ""
+            _save_json(HELPER_SETTINGS, helper)
+        self.say("Undone. Clear the client's Cache folder and restart the worldserver; the SQL rows stay "
+                 "(they do nothing without the tables and patches).")
+        return True
+
+
+def _mtime(path: str) -> float | None:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def _arg_pairs(args: list[str]) -> list[tuple[str, str]]:
+    return sorted(zip(args[::2], args[1::2]))
+
+
+def _copy_any(src: str, dst: str) -> None:
+    if os.path.isdir(src):
+        shutil.copytree(src, dst)
+    else:
+        shutil.copy2(src, dst)
+
+
+def _remove_any(path: str) -> None:
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    elif os.path.exists(path):
+        os.remove(path)

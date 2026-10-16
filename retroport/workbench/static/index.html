@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retroport Workbench</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/icon.png">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Retroport <span>Workbench</span></div>
+  <div class="sources" id="sources" role="tablist" aria-label="Data source"></div>
+  <label class="search">
+    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4.5 4.5"/></svg>
+    <input id="q" type="search" placeholder="Search items and sets by name or id   ( / )" autocomplete="off" spellcheck="false">
+  </label>
+  <div class="pill" id="state" title="Loading status">starting…</div>
+</header>
+
+<nav class="side">
+  <button class="nav on" data-view="items">Items</button>
+  <button class="nav" data-view="sets">Sets &amp; collections</button>
+  <button class="nav" data-view="basket">Basket <span class="count" id="basket-count">0</span></button>
+  <div class="nav-sep">Next</div>
+  <button class="nav" data-view="backport">Backport <span class="count" id="kit-state"></span></button>
+  <button class="nav soon" disabled title="Phase 4: retroport race packages and installs">Packages</button>
+  <button class="nav" data-view="settings">Settings <span class="count warn" id="settings-state" hidden>!</span></button>
+  <div class="log" id="log" aria-live="polite"></div>
+</nav>
+
+<main id="main">
+  <section class="view" id="view-items">
+    <div class="filters" id="item-filters">
+      <select id="f-slot" aria-label="Slot"><option value="">Any slot</option></select>
+      <select id="f-armour" aria-label="Armour type"><option value="">Any armour</option></select>
+      <select id="f-weapon" aria-label="Weapon type"><option value="">Any weapon</option></select>
+      <select id="f-expansion" aria-label="Expansion"><option value="">Any expansion</option></select>
+      <select id="f-quality" aria-label="Lowest quality"><option value="">Any quality</option></select>
+      <select id="f-cls" aria-label="Class"><option value="">Any class</option></select>
+      <label class="check"><input type="checkbox" id="f-looks"> One per look</label>
+      <label class="check" title="Blizzard's [DNT], [PH] and zzOLD items"><input type="checkbox" id="f-junk"> Test items</label>
+      <select id="f-sort" aria-label="Sort">
+        <option value="">Newest first</option><option value="name">Name</option>
+        <option value="quality">Quality</option><option value="id">Item id</option>
+      </select>
+    </div>
+    <div class="summary" id="item-summary"></div>
+    <div class="grid items" id="item-grid"></div>
+    <button class="more" id="item-more" hidden>Load more</button>
+  </section>
+
+  <section class="view" id="view-sets" hidden>
+    <div class="filters" id="set-filters">
+      <div class="seg" role="tablist" aria-label="Set kind">
+        <button class="on" data-kind="transmog">Transmog sets</button><button data-kind="itemset">Item sets</button>
+      </div>
+      <select id="s-expansion" aria-label="Expansion"><option value="">Any expansion</option></select>
+      <select id="s-cls" aria-label="Class"><option value="">Any class</option></select>
+      <select id="s-armour" aria-label="Armour type"><option value="">Any armour</option></select>
+    </div>
+    <div class="summary" id="set-summary"></div>
+    <div class="grid sets" id="set-grid"></div>
+    <button class="more" id="set-more" hidden>Load more</button>
+  </section>
+
+  <section class="view" id="view-basket" hidden>
+    <div class="page-head">
+      <div>
+        <h2>Basket</h2>
+        <p class="muted" id="basket-summary"></p>
+      </div>
+      <div class="head-actions">
+        <button class="btn ghost" id="basket-clear">Empty the basket</button>
+        <button class="btn" id="basket-go">Install these →</button>
+      </div>
+    </div>
+    <div id="basket-changes"></div>
+    <div id="basket-list"></div>
+  </section>
+
+  <section class="view" id="view-settings" hidden>
+    <div class="page-head">
+      <div>
+        <h2>Settings</h2>
+        <p class="muted">Where your game and server are, and where the items come from. The workbench keeps its
+          cache and basket in <code id="st-data"></code>.</p>
+      </div>
+    </div>
+    <div class="panel welcome" id="st-welcome" hidden>
+      <h3>Welcome</h3>
+      <p>Point the workbench at your <b>3.3.5a client</b> to begin - everything else has a default. Retail's items
+        and the bodies the character view dresses come from <b>wago.tools</b>, so there's nothing else to install.</p>
+    </div>
+    <div class="panel"><h3>Your game and server</h3><div class="form" id="st-game"></div></div>
+    <div class="panel"><h3>Where the items come from</h3><div class="form" id="st-sources"></div></div>
+    <div class="panel"><h3>Backport kit</h3><div class="form" id="st-kit"></div></div>
+    <div class="actions sticky-save"><button class="btn" id="st-save">Save</button>
+      <span class="muted" id="st-note"></span></div>
+  </section>
+
+  <section class="view" id="view-backport" hidden>
+    <div class="page-head">
+      <div>
+        <h2>Backport</h2>
+        <p class="muted">Install turns the basket into a patch for your client and item rows for your server. It
+          builds only what changed, backs up everything it replaces, and Undo puts it back.</p>
+      </div>
+    </div>
+    <div class="panel install">
+      <div class="install-main">
+        <div>
+          <div class="install-what" id="k-what"></div>
+          <div class="install-where" id="k-where"></div>
+        </div>
+        <div class="install-buttons">
+          <button class="btn big" id="k-go">Install</button>
+          <button class="btn ghost" id="k-stop" hidden>Stop</button>
+          <button class="btn ghost" id="k-undo">Undo last install</button>
+        </div>
+      </div>
+      <div class="kit-note" id="k-data"></div>
+      <div class="progress" id="k-progress"></div>
+      <div id="k-result"></div>
+    </div>
+    <details class="panel log-panel" id="k-log-panel">
+      <summary><span id="k-job">Log</span><button class="copy" id="k-log-bottom" type="button">follow</button></summary>
+      <pre id="k-log"></pre>
+    </details>
+    <details class="panel" id="k-advanced">
+      <summary>The kit's steps <span class="muted">(advanced)</span></summary>
+      <p class="muted small">Install runs these for you. Redo one when you changed something by hand; Build only
+        stops before the install, to look at the preview pictures first.</p>
+      <div id="k-steps" class="steps"></div>
+      <div class="actions"><button class="btn ghost" id="k-build">Build only</button></div>
+    </details>
+    <div class="panel" id="k-sheets-panel" hidden>
+      <h3 id="k-sheets-title">Preview pictures</h3>
+      <div id="k-sheets" class="sheets"></div>
+    </div>
+  </section>
+</main>
+
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <button class="close" id="drawer-close" aria-label="Close">×</button>
+  <div id="drawer-body"></div>
+</aside>
+
+<div class="toast" id="toast" role="status"></div>
+<script src="/static/viewer.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
