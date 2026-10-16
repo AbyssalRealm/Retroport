@@ -3,3 +3,25 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+
+# separate repos cloned alongside (their own git and licenses; wow-retail-backport has none)
+wow-retail-backport/
+wxl-equip-plus/
+
+# release builds (packaging/build_release.py) and the checkout's own launcher
+dist/
+build/
+/Retroport Workbench.exe
+
+# local only - never published: reference material (others' work, game files) and screenshots
+More Resources/
+BFA UI/
+Workbench Screenshots/
+Kul Tiran ScreenShots/
+Pandaren ScreenShots/
+CharacterSelect.png
+Desired UI.jpg
+# CMake build trees of the native plugins
+native/*/build/
+# this machine's Claude Code settings
+.claude/

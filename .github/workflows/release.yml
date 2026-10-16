@@ -1,0 +1,37 @@
+# Builds Retroport Workbench's release zip (packaging/build_release.py) on a Windows runner when a
+# version tag (v0.2.0, ...) is pushed, and attaches it to that tag's GitHub release.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Tests
+        run: python -m pytest -q tests
+      - name: Build the release
+        run: python packaging/build_release.py --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Retroport-Workbench
+          path: dist/*.zip
+      - name: Attach to the tag's release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
