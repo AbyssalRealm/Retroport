@@ -1,7 +1,7 @@
 [project]
 name = "retroport"
 version = "0.1.0"
-description = "Automate porting modern WoW assets (Cata-TWW) down to 3.3.5a."
+description = "Retroport Workbench: browse retail WoW items and sets in 3D and backport them to a 3.3.5a client."
 requires-python = ">=3.10"
 license = { text = "MIT" }
 readme = "README.md"

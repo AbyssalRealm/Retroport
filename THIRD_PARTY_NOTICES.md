@@ -1,16 +1,17 @@
 # Credits and third-party notices
 
-retroport stands on other people's work. Thank you to everyone below.
+Retroport Workbench stands on other people's work. Thank you to everyone below.
 
 ## Licenses in this repository
 
-- **retroport** (everything not listed otherwise) - MIT, see [LICENSE](LICENSE).
+- **Retroport Workbench and the rest of retroport** (everything not listed otherwise) - MIT, see
+  [LICENSE](LICENSE).
 - **The WarcraftXL client plugins** in `native/wxl-*` - GPL-3.0-or-later (they build against
   WarcraftXL's GPL-3.0 headers); the license text is [native/COPYING](native/COPYING).
 - **The glue screens** in `retroport/glue/ui` (`CharacterCreate` and `CharacterSelect`, `.lua` and
   `.xml`) are modified from Blizzard Entertainment's own 3.3.5a and Battle for Azeroth UI code; the
-  MIT license covers retroport's changes only, the rest remains Blizzard's. They are used by the
-  race tools (`retroport glue`) and left out of Workbench releases.
+  MIT license covers retroport's changes only, the rest remains Blizzard's. They belong to the
+  repository's command-line race tools (`retroport glue`) and are left out of Workbench releases.
 
 ## Code adapted into retroport
 
@@ -107,16 +108,21 @@ The release zip carries these, unchanged, each with its license file (in
   (`io_scene_wmo`) - its M2 shader tables are what the Workbench's 3D viewer follows to combine a
   model's textures; retroport's Blender decimation also reads `.m2` through it.
 
-## Tools retroport works with
+## Tools the repository's command-line code works with
 
-Credit to each tool's original authors.
+Not used by Retroport Workbench, but by the other tools in this repository
+([docs/command-line-tools.md](docs/command-line-tools.md)). Credit to each tool's original authors.
 
 - **wow.export** by Kruithne (https://github.com/Kruithne/wow.export) - extracting retail models.
 - **MultiConverter** - an alternative M2 conversion engine retroport can drive.
 - **M2Mod** and its **WoWTools** Blender plugin - the `.m2` <-> `.m2i` round trip for poly reduction.
 - **[Blender](https://www.blender.org)** - headless decimation.
-- **[AzerothCore](https://github.com/azerothcore/azerothcore-wotlk)** and **TrinityCore** - the
-  servers the SQL and DBCs are written for; `native/mod-retroport-racials` is an AzerothCore module.
+- **TrinityCore** - a server the command-line tools' SQL can be written for.
+
+## The server
+
+- **[AzerothCore](https://github.com/azerothcore/azerothcore-wotlk)** - the server the Workbench's
+  item SQL and DBCs are written for; `native/mod-retroport-racials` is an AzerothCore module.
 
 ## Not affiliated with Blizzard
 
