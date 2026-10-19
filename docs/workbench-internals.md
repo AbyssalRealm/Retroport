@@ -101,7 +101,11 @@ install fetches what it doesn't store from Blizzard's CDN, verified and kept in 
   entry into the basket). An install that worked takes what it installed out of the basket and
   clears the take-outs; every install, worked or not, goes into `<data>\basket-history.json` (the
   last five: when, the result and the step it stopped at, the basket, what was taken out) - the
-  Basket's *History*, each with *Put back in the basket*.
+  Basket's *History*, each with *Put back in the basket*. Installs it has no record of (made before it
+  kept one, or undone: Undo keeps an install's record as `install.json.undone`) come from the
+  project's own records, each one's basket worked out as what it added to the install before it.
+  The Stats page lists the basket's pieces only: something in the game gets new stats by going back
+  in the basket.
 - **Preview** (in an item's panel, at the top, its versions under it beside the race and sex -
   Normal / Heroic / Mythic, a PvP piece's Gladiator / Elite, named by the set that uses them, one
   per look - each a click away; a set's versions sit there too): its models
@@ -117,8 +121,12 @@ install fetches what it doesn't store from Blizzard's CDN, verified and kept in 
   and whether each reads the first UVs, the second or the environment. Shoulders sit as worn; a
   held item stands up facing you: weapons and shields are modelled from the grip along +X, so +X
   goes up (an axe's head, a staff's crown, a shield's top) and you face the flat side (a shield's
-  front is +Y; one modelled leaning, as it sits on the forearm, has its long axis stood up); guns,
-  bows and crossbows stay level. Armor drawn on the body shows its section textures. Icons and
+  front is +Y; one modelled leaning, as it sits on the forearm, has its long axis stood up); a shield
+  or off-hand modelled along Z instead (Shadowlands' PvP ones: Dread Gladiator's Barrier, Reprieve)
+  has Z stood up - a shield's +Z end on top, an off-hand's far end from the grip; guns, bows and
+  crossbows stay level. A held piece shown by itself has no race and sex to pick. A model's batches
+  are drawn as the client draws them, by priority plane, lowest first (a hood's glowing eyes,
+  priority 4, over its dark inside, priority 0). Armor drawn on the body shows its section textures. Icons and
   textures a source can't open (BfA 8.3.7 keeps its last sets' art encrypted) come from the other
   source.
 - **A set of one kind** - weapons, masks, cloaks, shoulders - shows its pieces one at a time in that
@@ -167,7 +175,7 @@ install's own tables don't (2 of ParticleColor's 2,122 rows at 12.1.5).
 
 The kit makes every look a cosmetic copy (its SQL says so: *any class, any race, level 1, no stats*),
 one item per retail display id (`ids.json` maps display -> entry). The Stats page
-(`static/stats.js`) gives each piece - of the basket and of what's in the game - its game values,
+(`static/stats.js`) gives each piece of the basket its game values,
 kept in `<data>/item-stats.json`: item level, required level, quality and binding are *for every
 piece* (`global`) only; armor type and the role the stats are for are for every piece unless a
 piece sets its own; classes are each piece's own; stats, armor, damage, durability and price are

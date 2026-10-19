@@ -432,7 +432,7 @@ function renderHistory(history) {
     const back = h.basket.filter(e => !inBasket(keyOf(e)));
     return el("div", {class: "hist-row"},
       el("span", {class: "hist-when"}, when(h.time)),
-      el("span", {class: "hist-result " + (ok ? "ok" : "bad")}, ok ? "✓ installed" :
+      el("span", {class: "hist-result " + (ok ? "ok" : "bad")}, ok ? "✓ installed" : h.result === "undone" ? "↶ undone" :
          h.result === "stopped" ? "stopped" : `✗ failed${h.step ? ` at "${stepWords(h.step)}"` : ""}`),
       el("span", {class: "chips"}, h.basket.map(e => el("span", {class: "chip"}, e.name)),
          (h.taken_out || []).map(e => el("span", {class: "chip out", title: "taken out of the game"}, e.name))),
@@ -941,6 +941,8 @@ function loadDisplay(pb, display, slot, from = null) {
       pb.textures.replaceChildren(...p.body.map(textureThumb(source)));
       const cape = slot === BACK && p.row && p.row.model_types[0] === CAPE && p.row.materials[0];
       if (!p.models.length && (cape || p.body.length)) {
+        const picker = pb.controls.querySelector(".pv-pick");
+        if (picker) picker.hidden = false;
         const got = await dress(v, [{display, slot}], token, source);
         if (!got) return;
         v.fit(cape ? "back" : "front");
@@ -951,6 +953,9 @@ function loadDisplay(pb, display, slot, from = null) {
         return;
       }
       v.clear();
+      // a held piece shown by itself is the same on every body: no race or sex to pick
+      const picker = pb.controls.querySelector(".pv-pick");
+      if (picker) picker.hidden = HELD.includes(slot) && p.models.length > 0;
       for (const m of p.models) {
         // shoulders: the left one (position 0) on the wearer's left (+Y), the right one on the right
         const offset = slot === 3 && m.position >= 0 ? [0, m.position === 0 ? 0.21 : -0.21, 0] : [0, 0, 0];

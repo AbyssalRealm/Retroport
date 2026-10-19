@@ -307,11 +307,10 @@ class Workbench:
                 "tables": WK.tables(self.reference()), "bonuses": opts["bonuses"], "socket_bonuses": opts["socket_bonuses"]}
 
     def stats_pieces(self) -> dict:
-        """The pieces of what's in the game and of the basket - one per look, as the kit makes one item
-        per look - with what the catalog knows of each (slot, class and subclass, quality), its in-game
-        entry once built, and whether it's in the game already."""
-        plan = self.install_plan()
-        basket_keys = {C.entry_key(e) for e in self.basket()}
+        """The basket's pieces - one per look, as the kit makes one item per look - with what the
+        catalog knows of each (slot, class and subclass, quality) and its in-game entry once built.
+        (Something in the game gets its stats changed by putting it in the basket again.)"""
+        plan = C.plan_basket(self.catalogs, self.basket())
         ids = K._load_json(os.path.join(self.kit.cfg.work, "ids.json"), {}) if self.kit.cfg.work else {}
         entries = {str(k): v for k, v in ((ids or {}).get("item") or {}).items()}
         pieces, seen = [], {}
@@ -329,8 +328,7 @@ class Workbench:
                      "label": look.get("label") or "", "icon": look.get("icon") or 0, "quality": look.get("quality"),
                      "inv": look.get("slot") or 0, "cls": row[C.F["cls"]] if row is not None else 0,
                      "sub": row[C.F["sub"]] if row is not None else 0, "source": e.get("source"),
-                     "groups": [e["name"]], "group_key": e["key"], "entry": entries.get(d),
-                     "in_game": e["key"] not in basket_keys}
+                     "groups": [e["name"]], "group_key": e["key"], "entry": entries.get(d)}
                 seen[d] = p
                 pieces.append(p)
         return {"pieces": pieces, "edits": IS.load(self.settings.data_dir),
@@ -456,17 +454,42 @@ class Workbench:
         return C.plan_basket(self.catalogs, self.install_list())
 
     def history(self) -> list:
+        """The last five installs, newest first: the ones this workbench recorded (tried or done), and
+        the project's own install records it has none for (made before it kept a history, or undone -
+        Undo keeps a record as install.json.undone): each one's basket worked out as what it added
+        to the install before it, and what it took out."""
         got = K._load_json(os.path.join(self.settings.data_dir, "basket-history.json"), [])
-        return got if isinstance(got, list) else []
+        rec = [h for h in got if isinstance(h, dict)] if isinstance(got, list) else []
+        have = {h.get("time") for h in rec}
+        root = os.path.join(self.kit.cfg.work, "backups") if self.kit.cfg.work else ""
+        prev: list = []
+        for stamp in sorted(os.listdir(root)) if root and os.path.isdir(root) else []:
+            for name, undone in (("install.json", False), ("install.json.undone", True)):
+                r = K._load_json(os.path.join(root, stamp, name), None)
+                if not isinstance(r, dict) or r.get("basket") is None:
+                    continue
+                keys = {C.entry_key(e) for e in r["basket"]}
+                before = {C.entry_key(e) for e in prev}
+                t = r.get("time") or stamp
+                if t not in have:
+                    rec.append({"time": t, "result": "undone" if undone else "installed", "step": "",
+                                "basket": [e for e in r["basket"] if C.entry_key(e) not in before],
+                                "taken_out": [e for e in prev if C.entry_key(e) not in keys]})
+                if not undone:
+                    prev = r["basket"]
+        return sorted(rec, key=lambda h: str(h.get("time")), reverse=True)[:5]
 
     def after_install(self, ok: bool, basket: list, taken_out: list) -> None:
         """An install ended: it goes in the history (the last five), and when it worked what it
         installed leaves the basket (it's in the game now) and the take-outs are done."""
         job = self.kit.job
         state = "installed" if ok else (job.state if job and job.state == "stopped" else "failed")
-        rec = {"time": time.strftime("%Y%m%d-%H%M%S"), "result": state, "step": "" if ok else (job.step if job else ""),
-               "basket": basket, "taken_out": taken_out}
-        K._save_json(os.path.join(self.settings.data_dir, "basket-history.json"), [rec, *self.history()][:5])
+        last = self.kit.last_install() if ok else None          # the same time as the project's record of it
+        rec = {"time": (last or {}).get("time") or time.strftime("%Y%m%d-%H%M%S"), "result": state,
+               "step": "" if ok else (job.step if job else ""), "basket": basket, "taken_out": taken_out}
+        got = K._load_json(os.path.join(self.settings.data_dir, "basket-history.json"), [])
+        own = [h for h in got if isinstance(h, dict) and h.get("time") != rec["time"]] if isinstance(got, list) else []
+        K._save_json(os.path.join(self.settings.data_dir, "basket-history.json"), [rec, *own][:5])
         if ok:
             done = {C.entry_key(e): e for e in basket}
             self.save_basket([e for e in self.basket() if done.get(C.entry_key(e)) != e])

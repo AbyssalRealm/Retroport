@@ -268,10 +268,12 @@ def test_an_install_adds_the_basket_to_whats_in_the_game_and_empties_it(tmp_path
     assert wb.basket() == [c] and wb.take_out() == [C.entry_key(b)]
     assert wb.history()[0]["result"] == "failed" and wb.history()[0]["basket"] == [c]
     wb.save_basket([c, {"kind": "item", "source": "retail", "id": 9, "name": "Added meanwhile"}])
+    wb.kit.last_install = lambda: {"time": "29991231-000000", "basket": [a, c]}     # the install it just made
     wb.after_install(True, [c], [b])
     assert [e["id"] for e in wb.basket()] == [9]                          # what was installed left the basket
     assert wb.take_out() == [] and [h["result"] for h in wb.history()] == ["installed", "failed"]
-    for _ in range(6):
+    for k in range(6):
+        wb.kit.last_install = lambda k=k: {"time": f"2999123{k}-000000", "basket": [a, c]}
         wb.after_install(True, [], [])
     assert len(wb.history()) == 5                                         # the last five
 
@@ -282,3 +284,20 @@ def test_a_basket_entry_stands_for_the_games_entry_of_the_same_key(tmp_path):
     left = dict(a, leave_out=["7"])
     wb.save_basket([left])
     assert wb.install_list() == [left]
+
+
+def test_the_history_reads_the_projects_installs_it_has_no_record_of(tmp_path):
+    a = {"kind": "set", "source": "retail", "id": 1, "name": "First"}
+    b = {"kind": "set", "source": "retail", "id": 2, "name": "Second"}
+    wb = _workbench(tmp_path)
+    root = tmp_path / "work" / "backups"
+    for stamp, name, basket in (("20261018-100000", "install.json", [a]), ("20261018-120000", "install.json", [a, b]),
+                                ("20261018-130000", "install.json.undone", [b])):
+        (root / stamp).mkdir(parents=True)
+        (root / stamp / name).write_text(json.dumps({"time": stamp, "basket": basket}))
+    h = wb.history()
+    assert [(x["time"], x["result"]) for x in h] == [("20261018-130000", "undone"), ("20261018-120000", "installed"),
+                                                     ("20261018-100000", "installed")]
+    assert h[1]["basket"] == [b] and h[2]["basket"] == [a]                     # what each added
+    assert h[0]["taken_out"] == [a]                                             # the undone one took the first out
+

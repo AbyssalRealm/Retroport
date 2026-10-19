@@ -17,9 +17,10 @@ server - in one click, with a backup of everything it changes and an Undo.
 - **Collect** what you like in the **Basket** - what the next install adds to your game. It shows
   every look each entry brings and the entries that overlap, so a mistake is easy to spot and remove
   (with Undo). Below it: what's **in your game** from earlier installs (every install keeps it; *take
-  out* removes it at the next one), and **History** - your last five installs, each with *Put back in
-  the basket*.
-- **Give them stats** in **Stats** - every piece in the basket and in your game: item level, required
+  out* removes it at the next one), and **History** - your last five installs (and undos), each with
+  *Put back in the basket*.
+- **Give them stats** in **Stats** - every piece in the basket (to change something in your game, put
+  it back in the basket from the History): item level, required
   level, quality, binding and armor type for every piece; armor type, the role its stats are for,
   which classes may wear it, stats, armor, weapon damage and speed, sockets and socket bonus,
   durability, price and *Unique* piece by piece - its in-game tooltip, and the piece in 3D under it,

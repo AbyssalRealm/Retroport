@@ -388,6 +388,9 @@ class Viewer {
       const extra = layers.slice(0, need - 1).map(l => { const u = url(l.texture); return u ? this.texture(u) : null; });
       return {...b, tex: src ? this.texture(src) : null, missing: !src && b.texture_type !== 0, sh, extra};
     });
+    // drawn as the client draws a model's batches: by priority plane, lowest first (a hood's glowing eyes,
+    // priority 4, over its dark inside, priority 0, whatever order the file lists them in)
+    part.batches.sort((a, b) => (a.priority || 0) - (b.priority || 0));
     part.emitters = (mesh.particles || []).map(d => ({def: d, list: [], acc: 0, tex: this.texture(url(d.texture))}));
     this.parts.push(part);
     return part;
@@ -466,7 +469,8 @@ class Viewer {
   // A held item stood up: weapons and shields are modelled from the grip at the origin along +X (an
   // axe's head, a staff's crown, a shield's top), so +X goes up, and you face the flat side - the
   // thinner of Y and Z (a shield's front is +Y). Guns, bows and crossbows stay level, barrel along
-  // the screen.
+  // the screen. Some shields and off-hands (Shadowlands' PvP ones) are modelled along Z instead:
+  // their long side stands up - a shield's +Z end on top, an off-hand's far end from the grip.
   orientHeld(slot) {
     let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
     for (const p of this.parts) {
@@ -480,13 +484,21 @@ class Viewer {
     const f = [0, 0, 0]; f[thin] = side;                       // model axis that faces the camera
     const ranged = [15, 26].includes(slot);
     let up = ranged ? (thin === 2 ? [0, 1, 0] : [0, 0, 1]) : [1, 0, 0];
-    if (slot === 14) {
-      // a shield can be modelled leaning, as it sits on the arm: stand its long axis up (its +X end on
-      // top) when it has one - a round shield keeps +X up
+    if (slot === 14 || slot === 23) {
+      // the long axis of the face (X and the other of Y and Z), from what the item draws
       const o2 = 3 - thin, c = this.drawnCovariance();
       const cxx = c[0][0], coo = c[o2][o2], cxo = c[0][o2], th = 0.5 * Math.atan2(2 * cxo, cxx - coo);
       const half = (cxx + coo) / 2, disc = Math.sqrt(Math.max(0, half * half - (cxx * coo - cxo * cxo)));
-      if ((half + disc) > 1.4 * (half - disc) && Math.abs(th) < Math.PI / 4) { up = [0, 0, 0]; up[0] = Math.cos(th); up[o2] = Math.sin(th); }
+      const ratio = (half + disc) / Math.max(1e-9, half - disc), axis = [0, 0, 0];
+      axis[0] = Math.cos(th); axis[o2] = Math.sin(th);
+      if (slot === 14 && ratio > 1.4 && Math.abs(th) < Math.PI / 4) {
+        up = axis;                                     // a shield modelled leaning, as it sits on the arm: its +X end on top
+      } else if (ratio > 1.2 && Math.abs(th) > Math.PI / 4) {
+        // modelled along the other axis: that axis up (the model's own, square to its face - horns or
+        // spikes sticking out don't tilt it), the end on top a shield's +Z, an off-hand's far end from the grip
+        up = [0, 0, 0];
+        up[o2] = slot === 14 ? 1 : (hi[o2] >= -lo[o2] ? 1 : -1);
+      }                                                // a round shield keeps +X up
     }
     const right = cross(up, f);
     const o = M4.ident();                                      // rows: view X = f, view Y = right, view Z = up

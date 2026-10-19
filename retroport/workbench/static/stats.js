@@ -293,7 +293,8 @@ function renderBulk() {
 }
 function renderList() {
   if (!SG.pieces.length) {
-    $("#stats-list").replaceChildren(el("div", {class: "empty"}, "The basket is empty."));
+    $("#stats-list").replaceChildren(el("div", {class: "empty"}, "The basket is empty. To change the stats of " +
+      "something in your game, put it in the basket again (Basket > History)."));
     return;
   }
   const groups = new Map();

@@ -432,3 +432,4 @@ canvas.viewer:active { cursor: grabbing; }
 .sgroup .badge { margin-left: 6px; }
 
 .top .pill { margin-left: auto; }
+.pv-pick[hidden] { display: none; }
