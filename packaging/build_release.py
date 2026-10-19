@@ -120,11 +120,13 @@ def runtime(dest: str, cache: str) -> None:
     shutil.rmtree(os.path.join(site, "bin"), ignore_errors=True)
 
 
-def app(dest: str) -> None:
-    """The workbench's code: retroport and its own copy of wotlkconv."""
+def app(dest: str, ver: str) -> None:
+    """The workbench's code: retroport and its own copy of wotlkconv; ``VERSION`` says which it is."""
     # the glue screens (retroport glue) are modified from Blizzard's own UI code: never in a release
     copy_tree(os.path.join(REPO, "retroport"), os.path.join(dest, "retroport"), leave_out=(os.path.join("glue", "ui"),))
     copy_tree(os.path.join(REPO, "wotlkconv"), os.path.join(dest, "wotlkconv"))
+    with open(os.path.join(dest, "retroport", "workbench", "VERSION"), "w", encoding="utf-8") as fh:
+        fh.write(ver + "\n")
 
 
 def notices(dest: str) -> None:
@@ -196,7 +198,7 @@ def main() -> int:
     say("runtime:")
     runtime(os.path.join(dest, "runtime"), os.path.join(a.out, "cache"))
     say("app:")
-    app(os.path.join(dest, "app"))
+    app(os.path.join(dest, "app"), ver)
     notices(dest)
     say("launcher:")
     launcher(os.path.join(dest, f"{NAME}.exe"), work)

@@ -6,10 +6,11 @@ once fetched. This launcher runs the kit as it is - its files are not touched or
 that function answered from a local install when the request is for the install's own build:
 
 * a table: our DB2 reader's rows written as wago's CSV (``ID`` + WoWDBDefs column names, arrays as
-  ``Name_0``, ``Name_1``; checked identical to wago's on ChrRaces, ParticleColor,
-  ItemNameDescription and HelmetGeosetData at 12.1.5.70391). wago's tables also carry the
-  server's hotfixes, which an install's own tables do not: a table this install has no
-  FileDataID for (an older listfile) comes from wago;
+  ``Name_0``, ``Name_1``; a table keyed by its file - ModelFileData, TextureFileData - has no ``ID``
+  column, as on wago; checked identical to wago's on ChrRaces, ParticleColor, ItemNameDescription,
+  HelmetGeosetData and ModelFileData at 12.1.5.70391). wago's tables also carry the server's
+  hotfixes, which an install's own tables do not: a table this install has no FileDataID for (an
+  older listfile) comes from wago;
 * a file: its bytes out of the install; one the install does not list does not exist at that
   build ("missing", no network); one it holds encrypted comes from wago (which serves zeros for
   content Blizzard has not released - the kit's own "encrypted" answer).
@@ -23,6 +24,24 @@ Either way the kit is shown WarcraftXL's open-folder patches: a FOLDER named lik
 packed patch of that name would be. A kit whose client reader opens only MPQ files (its ``client``
 module has no ``FolderArchive``) is handed our ``FolderArchive`` for those folders, in this process
 only - its files are not touched.
+
+The kit itself is changed in this process only - its files are never touched - where it trips over
+what the workbench gives it:
+
+* tables an older kitlocal cached with an ``ID`` column wago's don't have (ModelFileData,
+  TextureFileData: the kit's ``newtech`` called it new retail technology) are put right, the
+  file as it was kept beside it (``.retroport-backup``);
+* a sequence a model calls external (flag 0x20 clear) but keys nothing for - nothing to stream - is
+  made resident, and a model is given only the ``.anim`` files of sequences it does stream: the
+  kit copied a source model's every ``.anim`` to each per-race helm, and the audit then wanted
+  thousands of files no one had made ("C1/C2 closure ... .anim missing");
+* the build plan forgets displays the selection no longer has (a piece taken out of the basket):
+  the audit checked every display the plan ever held and wanted their files;
+* a helm that sits a little off a client body (the audit's "P1 placement": its centroid more than
+  12 cm from retail's, say on a ported race whose body isn't retail's) is a warning - "P1
+  placement (warning)" in the audit's notes - not a failure that stops the install. prove-gates
+  runs its own audit in a process of its own, as the kit wrote it, so its planted misplaced helm
+  is still caught.
 
 And its ``prove-gates`` plants its defects where they can be seen. It picks models from the build's
 manifest, which also lists files the build made but doesn't ship (a shoulder's untrimmed source
@@ -66,10 +85,12 @@ def flatten(row: dict) -> dict:
 
 
 def table_csv(rows: list[tuple[int, dict]]) -> str:
-    """Rows as wago's CSV text: ID first, then the columns in the order the rows have them."""
+    """Rows as wago's CSV text: ID first (unless FileDataID is already the key column),
+    then the columns in the order the rows have them."""
     flat = [flatten(r) for _i, r in rows]
-    columns = ["ID"]
-    seen = {"ID"}
+    has_fdid_key = bool(flat and "ID" not in flat[0] and "FileDataID" in flat[0])
+    columns = [] if has_fdid_key else ["ID"]
+    seen = set(columns)
     for r in flat[:1] + flat[-1:]:
         for k in r:
             if k not in seen:
@@ -229,6 +250,120 @@ def show_folder_patches(client) -> bool:
     return True
 
 
+FILE_KEYED = ("ModelFileData", "TextureFileData")         # wago's CSV of these has no ID column
+
+
+def repair_cached_tables(work: str) -> list[str]:
+    """The project's cached tables an older kitlocal wrote with an ``ID`` column wago's don't have,
+    without it (each one kept as it was beside it, ``.retroport-backup``). The ones put right."""
+    fixed = []
+    root = os.path.join(work, "db2")
+    if not os.path.isdir(root):
+        return fixed
+    for build in os.listdir(root):
+        for name in FILE_KEYED:
+            path = os.path.join(root, build, name + ".csv")
+            try:
+                with open(path, encoding="utf-8", newline="") as fh:
+                    rows = list(csv.reader(fh))
+            except OSError:
+                continue
+            if not rows or rows[0][:1] != ["ID"] or "FileDataID" not in rows[0]:
+                continue
+            backup = path + ".retroport-backup"
+            if not os.path.exists(backup):
+                os.replace(path, backup)
+            buf = io.StringIO()
+            csv.writer(buf, lineterminator="\n").writerows(r[1:] for r in rows)
+            _write(path, buf.getvalue().encode("utf-8"))
+            fixed.append(f"{build}/{name}")
+    return fixed
+
+
+def resident_when_unkeyed(body: bytes, needed: set, sequences_at: int) -> bytes:
+    """``body`` with every external sequence (flag 0x20 clear, not an alias) that isn't in
+    ``needed`` - it keys nothing, there's nothing to stream - made resident (0x20 set)."""
+    n, o = struct.unpack_from("<II", body, sequences_at)
+    out = None
+    for s in range(n):
+        at = o + s * 64 + 0x0C
+        fl = struct.unpack_from("<I", body, at)[0]
+        if not fl & 0x60 and s not in needed:
+            out = out or bytearray(body)
+            struct.pack_into("<I", out, at, fl | 0x20)
+    return bytes(out) if out is not None else body
+
+
+def keep_needed_anims(convert, m2edit, m2model) -> bool:
+    """Sequences that key nothing made resident wherever the kit packs a model, and each model
+    given only the ``.anim`` files of sequences it streams (see the module doc). False when the
+    kit does this itself."""
+    if hasattr(convert, "mark_unused_anims_resident"):
+        return False
+
+    def resident(model):
+        model = bytes(model)
+        needed = {s for s, _a, _v in convert.required_external_animations(model)} |                  {s for s, a, _v in m2model.external_set(model) if a > convert.MAX_ANIM_ID}   # as the kit leaves them
+        return resident_when_unkeyed(model, needed, 0x1C)
+
+    for name in ("union_bounds", "repack"):
+        original = getattr(m2edit, name)
+        setattr(m2edit, name, lambda model, *a, _original=original, **k: _original(resident(model), *a, **k))
+
+    copy_anims = convert.Builder.copy_anims
+
+    def only_streamed(self, src_rel: str, rel: str) -> None:
+        want = {m2model.anim_name(rel, a, v).lower() for _s, a, v in m2model.external_set(self.read_built(rel))
+                if a <= convert.MAX_ANIM_ID}
+        write = self.write
+
+        def write_wanted(dst, data, kind, *a, **k):
+            if kind == "anim" and dst.lower() not in want:
+                return None
+            return write(dst, data, kind, *a, **k)
+        self.write = write_wanted
+        try:
+            copy_anims(self, src_rel, rel)
+        finally:
+            del self.write                                   # the class's own again
+    convert.Builder.copy_anims = only_streamed
+    return True
+
+
+def plan_follows_selection(build_mod, bpcore) -> None:
+    """The kit's build first drops plan entries for displays the selection no longer has."""
+    run = build_mod.run
+
+    def _run(prj, log, only, *a, **k):
+        if not only:
+            displays = (bpcore.load_json(prj.path("selection.json"), {}) or {}).get("displays") or {}
+            path = prj.path("build", "plan.json")
+            plan = bpcore.load_json(path, {}) or {}
+            kept = {d: p for d, p in plan.items() if d in displays}
+            if len(kept) < len(plan):
+                bpcore.save_json(path, kept)
+                log(f"kitlocal: {len(plan) - len(kept)} display(s) no longer selected left out of the build plan")
+        return run(prj, log, only, *a, **k)
+    build_mod.run = _run
+
+
+PLACEMENT, PLACEMENT_WARNING = "P1 placement", "P1 placement (warning)"
+
+
+def placement_warns(gates) -> None:
+    """The audit's helm-placement misses become notes ``P1 placement (warning)`` (see the module doc)."""
+    placement = gates.placement
+
+    def _placement(prj, rep, *a, **k):
+        fail = rep.fail
+        rep.fail = lambda gate, what: (rep.note(PLACEMENT_WARNING, what) if gate == PLACEMENT else fail(gate, what))
+        try:
+            return placement(prj, rep, *a, **k)
+        finally:
+            del rep.fail
+    gates.placement = _placement
+
+
 MODEL_KINDS = ("helm", "shoulder", "weapon", "shield")
 
 
@@ -255,7 +390,7 @@ def moves_what_it_ships(body: bytes, skin: bytes) -> bool:
     moves with it)."""
     bone = first_keyed_bone(body)
     if bone is None:
-        return True                                      # nothing for M8 to move here: no harm
+        return True                                       # nothing for M8 to move here: no harm
     nb, ob = struct.unpack_from("<II", body, 0x2C)
     parent = [struct.unpack_from("<h", body, ob + i * 88 + 8)[0] for i in range(nb)]
 
@@ -360,9 +495,26 @@ def main(argv: list[str] | None = None) -> int:
         if d not in sys.path:
             sys.path.insert(0, d)
     try:
-        import client as kit_client                          # the kit's own modules, as they are
+        import client as kit_client                       # the kit's own modules, as they are
         if show_folder_patches(kit_client):
             print("kitlocal: the kit is shown the client's open-folder patches", flush=True)
+    except ImportError:
+        pass
+    work = kit_args[kit_args.index("--work") + 1] if "--work" in kit_args[:-1] else ""
+    if work:
+        fixed = repair_cached_tables(work)
+        if fixed:
+            print(f"kitlocal: put right {', '.join(fixed)} (cached with an ID column wago's tables don't have)", flush=True)
+    try:
+        import convert
+        import m2edit
+        import m2model
+        keep_needed_anims(convert, m2edit, m2model)
+        import bpcore
+        import build as kit_build
+        plan_follows_selection(kit_build, bpcore)
+        import gates
+        placement_warns(gates)
     except ImportError:
         pass
     if kit_args[:1] == ["prove-gates"] and "--work" in kit_args:
@@ -375,7 +527,6 @@ def main(argv: list[str] | None = None) -> int:
     if a.retail:
         from .catalog import Source, SourceSpec
         src = Source(SourceSpec("retail", "Retail", a.retail, a.product, True), a.dbd, a.listfile, a.cache)
-        work = kit_args[kit_args.index("--work") + 1] if "--work" in kit_args else ""
         local = LocalRetail(src, [os.path.join(work, "listfile.csv")] if work else [])
         import wago
         wago._get = local.wrap(wago._get)

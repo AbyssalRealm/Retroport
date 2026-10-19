@@ -14,6 +14,7 @@ API (GET unless noted):
   /api/set?source=&id=&kind=
   /api/basket                    GET the basket; POST replaces it
   /api/basket/plan               what installing it builds: each entry's looks, overlaps, changes
+  /api/basket/leave-out          POST {display, out}: a piece left out of the entries that have it (or put back)
   /api/kit                       the kit project's state; POST /api/kit/run {action: go|build|rerun|undo|stop...}
   /api/settings                  GET the Settings view; POST saves it (a changed source is read again)
   POST /api/pick {folder, title, start}   Windows' folder/file picker on this machine -> {path}
@@ -31,6 +32,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import shutil
 import threading
 import time
@@ -65,6 +67,28 @@ def code_stamp() -> float:
 
 
 STARTED_CODE = code_stamp()
+STARTED = time.time()
+
+
+def app_info() -> dict:
+    """Which workbench this is: its version (a release's ``VERSION`` file, else the source tree's
+    pyproject.toml), the folder it runs from, and how new its code is."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(os.path.dirname(here))                # the source tree, or a release's app\
+    version = ""
+    try:
+        with open(os.path.join(here, "VERSION"), encoding="utf-8") as fh:
+            version = fh.read().strip()
+        home = os.path.dirname(root)                             # the release folder (app\ is in it)
+    except OSError:
+        home = root
+        try:
+            with open(os.path.join(root, "pyproject.toml"), encoding="utf-8") as fh:
+                m = re.search(r'^version\s*=\s*"([^"]+)"', fh.read(), re.M)
+            version = (m.group(1) if m else "?") + " (source)"
+        except OSError:
+            version = "?"
+    return {"version": version, "from": home, "code": STARTED_CODE}
 
 
 # What a fresh install reads: retail's items from wago.tools at its newest build, and the BfA
@@ -157,12 +181,13 @@ class Workbench:
         self._lock = threading.Lock()
         self._loading = threading.Lock()
         self.last_hello = self.last_bye = 0.0         # the page's comings and goings (app.py)
+        self.quitting = False                         # another copy of the app asked this one to stop
 
         def save_kit(values: dict) -> None:
             settings.kit = values
             settings.save()
         self.kit = K.Kit(settings.kit, None, settings.dbd, settings.listfile, settings.data_dir, save_kit)
-        self.kit.hooks = {"built": self._stats_built, "installed": self._stats_installed}
+        self.kit.hooks = {"tables": self._stats_tables, "built": self._stats_built, "installed": self._stats_installed}
         self._reference: dict | None = None
         self._client_options: dict | None = None
         self._options_lock = threading.Lock()
@@ -307,14 +332,19 @@ class Workbench:
                 "basket_sets": [{"key": e["key"], "name": e["name"], "pieces": [str(l["display"]) for l in e["looks"] if l.get("display")]}
                                 for e in plan["entries"] if e["kind"] in ("set", "itemset")]}
 
-    def _stats_built(self, kit) -> bool:
+    def _stats_tables(self, kit) -> bool:
+        """Right after the kit writes its item tables: the Stats step's part of them (the kit's pack,
+        which comes after, packs it) - so its SQL is there even when a later step stops."""
+        return self._stats_built(kit, pack_again=False)
+
+    def _stats_built(self, kit, pack_again: bool = True) -> bool:
         """After the kit's steps: each piece's armour type in its Item table (packed again when that
         changed) and its stats in retroport-items.sql."""
         work, dd = kit.cfg.work, self.settings.data_dir
         try:
             edits = IS.load(dd)
             sids = IS.set_ids(dd, edits["sets"])
-            if IS.apply_item_dbc(work, edits):
+            if IS.apply_item_dbc(work, edits) and pack_again:
                 kit.say("Stats: armour types set in the item table - packing it again")
                 if kit._run(["pack", "--work", work], step="pack") != 0 or not kit.ledger().get("pack", {}).get("ok"):
                     kit.say("!! the kit could not pack the changed item table")
@@ -383,9 +413,53 @@ class Workbench:
             edits = got["edits"]
             without = [p["name"] for p in got["pieces"] if not IS.touched(edits, p["display"])]
             return {"stats": {"pieces": len(got["pieces"]), "without": len(without), "names": without[:6]},
-                    "foreign": len(self.foreign_looks())}
+                    "foreign": len(self.foreign_looks()), "audit": self.kit.audit_notes()}
         except Exception as e:
-            return {"stats": {"pieces": 0, "without": 0, "names": [], "error": str(e)}, "foreign": 0}
+            return {"stats": {"pieces": 0, "without": 0, "names": [], "error": str(e)}, "foreign": 0,
+                    "audit": {"warnings": [], "fails": []}}
+
+    def kit_basket(self, plan: dict) -> list:
+        """The basket as the kit selects it: an entry with pieces left out is its other looks."""
+        out = []
+        for e, p in zip(self.basket(), plan["entries"]):
+            if not e.get("leave_out"):
+                out.append(e)
+                continue
+            if p["state"] != "ready":
+                raise RuntimeError(f"{e.get('name') or 'an entry'}: its catalog is still loading")
+            out += [{"kind": "look", "source": e.get("source"), "id": int(l["display"]), "name": l.get("name") or ""}
+                    for l in p["looks"] if l.get("display")]
+        return out
+
+    def kit_args(self, plan: dict | None = None) -> list[str]:
+        """The kit's select arguments for the basket (pieces left out taken out)."""
+        return K.basket_args(self.kit_basket(plan or self.basket_plan()))
+
+    def kit_status(self) -> dict:
+        try:
+            args = self.kit_args()
+        except RuntimeError:                              # a catalog still loading: the basket's own
+            args = None
+        return self.kit.status(self.basket(), args)
+
+    def leave_out(self, display, out: bool) -> dict:
+        """A piece (retail display) left out of every basket entry that has it - or put back."""
+        d = str(int(display))
+        basket, plan, hit = self.basket(), self.basket_plan(), 0
+        for e, p in zip(basket, plan["entries"]):
+            if d not in {str(l.get("display")) for l in p["looks"] + p.get("left_out", [])}:
+                continue
+            skip = set(map(str, e.get("leave_out") or []))
+            skip = skip | {d} if out else skip - {d}
+            if skip:
+                e["leave_out"] = sorted(skip, key=int)
+            else:
+                e.pop("leave_out", None)
+            hit += 1
+        if not hit:
+            raise LookupError(f"no basket entry has look {d}")
+        self.save_basket(basket)
+        return self.basket_plan()
 
     def foreign_looks(self) -> list[dict]:
         """Looks the kit's project built outside the workbench and the basket lacks (see Kit)."""
@@ -402,6 +476,12 @@ class Workbench:
                                  sub=(self.meta()["slots"].get(got[0]["slot"]) or ""))
             out.append(entry)
         return out
+
+    def quit(self) -> None:
+        """Another copy of the app takes over (app.py): this one stops - never in a kit job."""
+        if self.kit.busy():
+            raise RuntimeError("the workbench is busy with the kit - wait for it to finish")
+        self.quitting = True
 
     def page_seen(self, open_: bool) -> None:
         """A page says it's open (now and then) or that it's closing: the app ends with its last page."""
@@ -420,7 +500,8 @@ class Workbench:
                             for k, s in self.sources.items()],
                 "client": self.settings.client, "in_client": len(self.in_client), "log": self.log[-40:],
                 "problems": self.settings.problems(), "kit": {"bp": self.kit.cfg.bp, "work": self.kit.cfg.work},
-                "setup": not self.settings.client, "updated": code_stamp() > STARTED_CODE + 1}
+                "setup": not self.settings.client, "updated": code_stamp() > STARTED_CODE + 1,
+                "app": app_info(), "instance": STARTED, "quitting": self.quitting}
 
     @staticmethod
     def meta() -> dict:
@@ -605,9 +686,9 @@ class Workbench:
         if action == "go":
             plan = self.basket_plan()
             looks = {str(l["display"]) for e in plan["entries"] for l in e["looks"] if l.get("display")}
-            k.start("go", k.go, self.basket(), looks)
+            k.start("go", k.go, self.basket(), looks, self.kit_args(plan))
             return
-        jobs = {"create": (k.create,), "select": (k.select, self.basket()),
+        jobs = {"create": (k.create,), "select": (k.select, self.basket(), self.kit_args()),
                 "scan": (k.scan,), "build": (k.build,), "rerun": (k.build, step), "install": (k.install,),
                 "undo": (k.undo,)}
         if action not in jobs:
@@ -624,8 +705,8 @@ class Workbench:
         src = lambda k: {"kind": specs[k].kind, "path": specs[k].path, "browse": specs[k].browse}
         return {"client": st.client, "server_dbc": kc.server_dbc, "retail": src("retail"), "bfa": src("bfa"),
                 "dbd": st.dbd, "listfile": st.listfile,
-                "kit": {"work": kc.work, "bp": kc.bp, "tools": kc.tools, "local": kc.local, "armor_pieces": kc.armor_pieces,
-                        "equip_plus": kc.equip_plus, "own_tools": os.path.dirname(K.deps.entry(self.settings.data_dir, "equip-plus"))},
+                "kit": {"work": kc.work, "local": kc.local, "armor_pieces": kc.armor_pieces, "equip_plus": kc.equip_plus,
+                        "own": self.kit.own_copies()},
                 "equip_plus": self.kit.equip_plus_client() if kc.client_data else None,
                 "checks": self.checks(), "first_run": not st.client, "data_dir": st.data_dir, "picker": P.available()}
 
@@ -665,21 +746,11 @@ class Workbench:
         if kc.work:
             prj = self.kit.project()
             put("work", True, f"the kit's project (retail {prj.get('build')})" if prj else "Install makes a new project here")
-        if kc.bp:
-            put("bp", os.path.isfile(kc.bp), "the kit" if os.path.isfile(kc.bp) else "no bp.py here")
         if kc.client_data:
             ep = self.kit.equip_plus_client()
             put("equip_plus", ep["installed"], ("Equip Plus is in your client" + ("" if ep["physics"] else
                 " - an older one: live physics needs 1.3.0 (its Releases page)")) if ep["installed"] else
                 "Equip Plus isn't in your client - Install leaves its 3D pieces out")
-        if kc.tools:
-            ver = self.kit.equip_plus_tools_version()
-            if ver and K.version_tuple(ver) < K.PHYSICS_VERSION:
-                put("tools_version", False, f"these tools are Equip Plus {ver}: they don't write the live-physics "
-                    "table (1.3.0 does) - use the workbench's own copy")
-        if kc.tools:
-            ok = os.path.isfile(os.path.join(kc.tools, "backport_to_equipplus.py"))
-            put("tools", ok, "Equip Plus's tools" if ok else "no backport_to_equipplus.py here")
         return out
 
     def apply_settings(self, v: dict) -> None:
@@ -704,9 +775,8 @@ class Workbench:
         kit["server_dbc"] = norm(v.get("server_dbc", self.kit.cfg.server_dbc))
         if st.client:
             kit["client_data"] = os.path.join(st.client, "Data")
-        for f in ("work", "bp", "tools"):
-            if f in kit:
-                kit[f] = norm(kit[f])
+        if "work" in kit:
+            kit["work"] = norm(kit["work"])
         ep = v.get("equip_plus_options")
         self.kit.set_settings(kit)                       # saves the settings, the workbench's with them
         if isinstance(ep, dict) and self.kit.equip_plus_installed():
@@ -791,13 +861,18 @@ def make_handler(wb: Workbench):
                     self._json({"ok": True, "count": len(body)})
                 elif url.path == "/api/kit/settings":
                     wb.kit.set_settings(body or {})
-                    self._json(wb.kit.status(wb.basket()))
+                    self._json(wb.kit_status())
+                elif url.path == "/api/quit":                    # another copy of the app takes over
+                    wb.quit()
+                    self._json({"ok": True})
                 elif url.path in ("/api/hello", "/api/bye"):     # a page open / closing (the app's lifetime)
                     wb.page_seen(url.path.endswith("hello"))
                     self._json({"ok": True})
                 elif url.path == "/api/stats":
                     IS.save(wb.settings.data_dir, body or {})
                     self._json({"ok": True})
+                elif url.path == "/api/basket/leave-out":
+                    self._json(wb.leave_out((body or {}).get("display"), bool((body or {}).get("out", True))))
                 elif url.path == "/api/kit/let-go":
                     wb.kit.let_go([str(d) for d in (body or {}).get("looks") or []])
                     self._json({"ok": True})
@@ -810,7 +885,7 @@ def make_handler(wb: Workbench):
                     self._json({"path": P.pick(bool(b.get("folder", True)), b.get("title", ""), b.get("start", ""), patterns)})
                 elif url.path == "/api/kit/run":
                     wb.run_kit((body or {}).get("action", ""), (body or {}).get("step", ""))
-                    self._json(wb.kit.status(wb.basket()))
+                    self._json(wb.kit_status())
                 else:
                     self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
             except (ValueError, TypeError) as e:
@@ -876,7 +951,7 @@ def make_handler(wb: Workbench):
             if path == "/api/basket/plan":
                 return self._json(wb.basket_plan())
             if path == "/api/kit":
-                return self._json(wb.kit.status(wb.basket()) | wb.install_notes())
+                return self._json(wb.kit_status() | wb.install_notes())
             if path == "/api/kit/log":
                 return self._json(wb.kit.log_since(_int(q.get("since")) or 0))
             if path.startswith("/kit/sheet/"):

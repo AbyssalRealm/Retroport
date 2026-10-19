@@ -4,7 +4,9 @@
 the same):
 
 * what the server says goes to ``<data>/workbench.log`` - there is no console to show it;
-* the server starts; when one is running already (the app opened twice), only a window opens;
+* the server starts; when one is running already: the same copy opens only a window, another copy
+  (another folder, or this one with newer code since it started) asks to take its place - the old
+  one stops (never in a kit job) and its window closes;
 * the page opens in an Edge (or Chrome) *app window* - no tabs, no address bar - with a browser
   profile of its own, so it never mixes with your own browsing;
 * the app ends with its last page: when the window closes (or every page says goodbye and none
@@ -17,12 +19,14 @@ Without Edge or Chrome the page opens in your default browser, and the same rule
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 import threading
 import time
 import traceback
+import urllib.error
 import urllib.request
 
 from . import server as SV
@@ -64,8 +68,54 @@ def running(url: str) -> bool:
         return False
 
 
+def running_app(url: str) -> dict:
+    """The running workbench's ``app_info`` ({} from one too old to say)."""
+    try:
+        with urllib.request.urlopen(url + "api/status", timeout=5) as r:
+            return json.load(r).get("app") or {}
+    except Exception:
+        return {}
+
+
+def same_copy(other: dict, mine: dict) -> bool:
+    """Whether the running workbench is this copy with this code (only a window is needed then)."""
+    return bool(other) and os.path.normcase(other.get("from", "")) == os.path.normcase(mine["from"]) and \
+        other.get("code", 0) >= mine["code"] - 1
+
+
+def take_over(url: str, wait: float = 30.0) -> str:
+    """Ask the running workbench to stop and wait until it has: "" when it did, else why not."""
+    try:
+        req = urllib.request.Request(url + "api/quit", data=b"{}", method="POST", headers={"Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5).close()
+    except urllib.error.HTTPError as e:
+        try:
+            return json.load(e).get("error") or str(e)
+        except Exception:
+            return str(e)
+    except Exception as e:
+        return str(e)
+    end = time.time() + wait
+    while time.time() < end:
+        time.sleep(0.5)
+        if not running(url):
+            return ""
+    return "it didn't stop"
+
+
+def ask(text: str) -> bool:
+    """A yes/no question box."""
+    try:
+        import ctypes
+        return ctypes.windll.user32.MessageBoxW(None, text, "Retroport Workbench", 0x4 | 0x20) == 6
+    except Exception:
+        return False
+
+
 def should_end(wb: SV.Workbench, started: float, now: float, window_open: bool) -> bool:
     """The app's rule for ending (see the module doc)."""
+    if wb.quitting and not wb.kit.busy():
+        return True
     if wb.kit.busy() or window_open:
         return False
     hello, bye = wb.last_hello, wb.last_bye
@@ -99,13 +149,36 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://127.0.0.1:{port}/"
     profile = os.path.join(data, "window")
     print(f"\n=== {time.strftime('%Y-%m-%d %H:%M:%S')} Retroport Workbench starting ({sys.executable})", flush=True)
+    mine = SV.app_info()
+    print(f"version {mine['version']} from {mine['from']}", flush=True)
     try:
-        httpd, wb = SV.start_server(settings, port)
+        try:
+            httpd, wb = SV.start_server(settings, port)
+        except OSError:
+            if not running(url):
+                raise
+            other = running_app(url)
+            if same_copy(other, mine):
+                print("already running: opening a window on it", flush=True)
+                open_window(url, profile)
+                return 0
+            who = (f"Retroport Workbench {other['version']} from {other['from']}" if other else
+                   "An older Retroport Workbench")
+            if not other:                                    # too old to be asked to stop
+                message(f"{who} is still running. Close its window, wait a few seconds, then start this one "
+                        f"({mine['version']} from {mine['from']}) again.")
+                return 1
+            if not ask(f"{who} is running.\n\nStop it and start this one instead?\n"
+                       f"{mine['version']} from {mine['from']}"):
+                open_window(url, profile)
+                return 0
+            why = take_over(url)
+            if why:
+                message(f"{who} can't stop now: {why}.")
+                return 1
+            print(f"took over from {other['version']} ({other['from']})", flush=True)
+            httpd, wb = SV.start_server(settings, port)
     except OSError as e:
-        if running(url):
-            print("already running: opening a window on it", flush=True)
-            open_window(url, profile)
-            return 0
         message(f"Port {port} is taken by another program ({e.strerror or e}), so the workbench can't start.")
         return 1
     except Exception as e:

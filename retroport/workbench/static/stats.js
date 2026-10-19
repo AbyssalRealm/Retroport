@@ -232,6 +232,8 @@ function sel(attrs, options, value, onchange) {
   return s;
 }
 // a number field: plain text (a number input can't give its cursor back), digits only
+// what AzerothCore's item_template columns hold (a value beyond one and the server refuses the piece)
+const INT_MAX = 2147483647, UINT_MAX = 4294967295, SELL_MAX = 4294967295;
 function num(attrs, value, onchange) {
   const decimal = attrs.step && attrs.step < 1;
   const {step, min, max, ...rest} = attrs;
@@ -325,7 +327,7 @@ function renderEditor() {
   // stats rows
   const statsRows = (e.stats || []).map(([t, v], i) => el("div", {class: "statrow"},
     sel({}, Object.entries(SG.opts.stats).map(([id, s]) => [id, s[0]]), t, nv => { e.stats[i][0] = +nv; manual(p.display); saveStats(); renderStats(); }),
-    num({}, v, nv => { e.stats[i][1] = +nv || 0; manual(p.display); saveStats(); renderTooltip(); renderList(); }),
+    num({max: INT_MAX}, v, nv => { e.stats[i][1] = +nv || 0; manual(p.display); saveStats(); renderTooltip(); renderList(); }),
     el("button", {class: "remove", title: "Remove", onclick: () => { e.stats.splice(i, 1); manual(p.display); saveStats(); renderStats(); }}, "×")));
   const addStat = el("button", {class: "btn ghost small-btn", onclick: () => {
     (e.stats = e.stats || []).push([7, 0]); manual(p.display); saveStats(); renderStats(); }}, "+ Add a stat");
@@ -343,19 +345,20 @@ function renderEditor() {
 
   const copyBox = SG.copyOpen ? copyPanel(p) : null;
   const weapon = isWeapon(p) ? row(
-    field("Damage", el("span", {class: "pair"}, num({}, e.dmg_min, v => { e.dmg_min = v; manual(p.display); saveStats(); renderTooltip(); }),
-      " - ", num({}, e.dmg_max, v => { e.dmg_max = v; manual(p.display); saveStats(); renderTooltip(); }))),
-    field("Speed", num({step: 0.1, min: 0.5}, e.delay ? +(e.delay / 1000).toFixed(2) : "", v => { e.delay = v ? Math.round(v * 1000) : ""; manual(p.display); saveStats(); renderTooltip(); })),
+    field("Damage", el("span", {class: "pair"}, num({max: INT_MAX}, e.dmg_min, v => { e.dmg_min = v; manual(p.display); saveStats(); renderTooltip(); }),
+      " - ", num({max: INT_MAX}, e.dmg_max, v => { e.dmg_max = v; manual(p.display); saveStats(); renderTooltip(); }))),
+    field("Speed", num({step: 0.1, min: 0.5, max: 65.5}, e.delay ? +(e.delay / 1000).toFixed(2) : "", v => { e.delay = v ? Math.round(v * 1000) : ""; manual(p.display); saveStats(); renderTooltip(); })),
     el("span", {class: "muted small dps"}, e.dmg_max && e.delay ? `${(((+e.dmg_min || 0) + (+e.dmg_max)) / 2 / (e.delay / 1000)).toFixed(1)} damage per second` : "")) : null;
   const sockets = [0, 1, 2].map(k => sel({}, [["0", "No socket"], ...Object.entries(SG.opts.sockets).map(([c, n]) => [c, n + " socket"])],
     (e.sockets || [])[k] || 0, v => { const s = (e.sockets || []).slice(); s[k] = +v; e.sockets = s.filter(Boolean); saveStats(); renderStats(); }));
   const bonusSel = sel({disabled: !(e.sockets || []).length}, [["0", "No socket bonus"], ...SG.opts.socket_bonuses.map(b => [b.id, b.name])],
     e.socket_bonus || 0, v => { e.socket_bonus = +v; saveStats(); renderTooltip(); });
+  if (+e.sell > SELL_MAX) e.sell = SELL_MAX;
   const gold = Math.floor((e.sell || 0) / 10000), silver = Math.floor(((e.sell || 0) % 10000) / 100), copper = (e.sell || 0) % 100;
-  const sellIn = (val, mul) => num({class: "coin-in"}, val, v => {
+  const sellIn = (val, mul) => num({class: "coin-in", max: mul === "g" ? Math.floor(SELL_MAX / 10000) : 99}, val, v => {
     const parts = {g: gold, s: silver, c: copper};
     parts[mul] = +v || 0;
-    e.sell = parts.g * 10000 + parts.s * 100 + parts.c; saveStats(); renderTooltip();
+    e.sell = Math.min(parts.g * 10000 + parts.s * 100 + parts.c, SELL_MAX); saveStats(); renderTooltip();
   });
 
   box.replaceChildren(
@@ -376,12 +379,12 @@ function renderEditor() {
     el("div", {class: "esec"}, el("h4", {}, "Classes"), classChips),
     el("div", {class: "esec"}, el("h4", {}, "Stats"), statsHead, copyBox, el("div", {class: "statrows"}, statsRows), addStat),
     el("div", {class: "esec"}, el("h4", {}, isWeapon(p) ? "Weapon" : "Armour"),
-      p.cls === 4 ? row(field("Armour", num({}, e.armor, v => { e.armor = v; manual(p.display); saveStats(); renderTooltip(); })),
-                        subOf(p) === 6 ? field("Block", num({}, e.block, v => { e.block = v; saveStats(); renderTooltip(); })) : null) : null,
+      p.cls === 4 ? row(field("Armour", num({max: UINT_MAX}, e.armor, v => { e.armor = v; manual(p.display); saveStats(); renderTooltip(); })),
+                        subOf(p) === 6 ? field("Block", num({max: UINT_MAX}, e.block, v => { e.block = v; saveStats(); renderTooltip(); })) : null) : null,
       weapon),
     el("div", {class: "esec"}, el("h4", {}, "Sockets"), row(...sockets), row(field("Socket bonus", bonusSel))),
     el("div", {class: "esec"}, el("h4", {}, "More"),
-      row(field("Durability", num({}, e.durability, v => { e.durability = v; saveStats(); renderTooltip(); })),
+      row(field("Durability", num({max: 65535}, e.durability, v => { e.durability = v; saveStats(); renderTooltip(); })),
           field("Sell price", el("span", {class: "pair"}, sellIn(gold, "g"), el("span", {class: "coin g"}), sellIn(silver, "s"),
                                  el("span", {class: "coin s"}), sellIn(copper, "c"), el("span", {class: "coin c"})))),
       row(field("Description", (() => { const i = el("input", {value: e.description || "", placeholder: "the yellow line at the bottom"});

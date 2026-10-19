@@ -21,7 +21,8 @@ What it needs
 -------------
 - Windows 10 or 11. Its window is Microsoft Edge's app mode (Edge comes with Windows).
 - The internet. Retail's items, models and textures come from wago.tools, and the first Install
-  downloads the retail backport kit and Equip Plus from their authors' GitHub pages:
+  downloads the retail backport kit and Equip Plus's tools from their authors' GitHub pages (always
+  these copies, at the versions this release is tested with):
     https://github.com/Kirazul/wow-retail-backport
     https://github.com/TheDaveCalaz/wxl-equip-plus
   If wago.tools is down, Settings can read your own retail install instead.

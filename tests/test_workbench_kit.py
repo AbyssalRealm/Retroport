@@ -83,6 +83,7 @@ def test_the_basket_becomes_the_kits_select_arguments():
 def _project(tmp_path, monkeypatch):
     monkeypatch.setattr(K, "HELPER_SETTINGS", str(tmp_path / "helper.json"))
     monkeypatch.setattr(K, "wow_running", lambda: False)
+    monkeypatch.setattr(K.deps, "have", lambda data_dir, name: True)        # the own copies are here
     work, data = tmp_path / "work", tmp_path / "Data"
     (work / "reports").mkdir(parents=True)
     (work / "out").mkdir()
@@ -137,6 +138,25 @@ def test_install_builds_a_changed_basket_only_and_remembers_what_it_put_in(tmp_p
     sel.write_text("{}")
     os.utime(sel, (sel.stat().st_atime, sel.stat().st_mtime + 5))
     assert kit.selected() is None and not kit.selected_matches(more)
+
+
+def test_a_piece_left_out_is_a_new_selection_of_the_same_basket(tmp_path, monkeypatch):
+    kit, work, data = _project(tmp_path, monkeypatch)
+    ran = []
+
+    def kit_step(args, step="", local=None, cwd=None):
+        ran.append(args)
+        if args[0] == "select":
+            (work / "selection.json").write_text(json.dumps({"n": len(ran)}))
+        return 0
+    monkeypatch.setattr(kit, "_run", kit_step)
+    basket = [{"kind": "set", "source": "retail", "id": 5, "name": "A"}]
+    assert kit.go(basket) and ran[-1][-2:] == ["--set", "5"]
+    assert kit.selected_matches(basket)
+    left = [dict(basket[0], leave_out=["1"])]
+    assert not kit.selected_matches(left, ["--display", "2"])             # the same entry, a piece fewer
+    assert kit.go(left, None, ["--display", "2"]) and ran[-1][-2:] == ["--display", "2"]
+    assert kit.selected_matches(left, ["--display", "2"]) and kit.last_install()["basket"] == left
 
 
 def test_install_waits_for_a_packed_build(tmp_path, monkeypatch):
@@ -238,3 +258,184 @@ def test_only_sections_5_to_9_make_a_body_hd():
     rows = lambda *bases: [{"BaseSection": b} for b in bases]
     assert CH.hd_skin(rows(0, 1, 5, 6)) and CH.hd_skin(rows(9))
     assert not CH.hd_skin(rows(0, 1, 2, 3, 4, 10, 11, 15))           # Pandaren's: its own skins, no HD
+
+
+# -- what kitlocal changes in the kit's run (in its process only) ---------------------------
+def test_a_table_keyed_by_its_file_has_no_id_column_as_on_wago():
+    rows = [(116902, {"GeoBox": [0, 0], "FileDataID": 116902, "Flags": 0, "ModelResourcesID": 18251})]
+    assert L.table_csv(rows).splitlines() == ["GeoBox_0,GeoBox_1,FileDataID,Flags,ModelResourcesID", "0,0,116902,0,18251"]
+    assert L.table_csv([(7, {"Name_lang": "x"})]).splitlines()[0] == "ID,Name_lang"     # the others keep theirs
+
+
+def test_tables_cached_with_an_id_column_wagos_lack_are_put_right(tmp_path):
+    db2 = tmp_path / "db2" / "12.1.5.70391"
+    db2.mkdir(parents=True)
+    bad = "ID,GeoBox_0,FileDataID,Flags\n116902,0,116902,0\n"
+    (db2 / "ModelFileData.csv").write_text(bad)
+    (db2 / "TextureFileData.csv").write_text("FileDataID,UsageType\n116922,0\n")        # right already
+    (db2 / "ChrRaces.csv").write_text("ID,Name_lang\n1,Human\n")
+    assert L.repair_cached_tables(str(tmp_path)) == ["12.1.5.70391/ModelFileData"]
+    assert (db2 / "ModelFileData.csv").read_text() == "GeoBox_0,FileDataID,Flags\n0,116902,0\n"
+    assert (db2 / "ModelFileData.csv.retroport-backup").read_text() == bad
+    assert (db2 / "ChrRaces.csv").read_text() == "ID,Name_lang\n1,Human\n"
+    assert L.repair_cached_tables(str(tmp_path)) == []                                  # once
+
+
+def _sequences(*flags_and_ids):
+    """A model holding only its sequences: (flags, animation id) each."""
+    import struct
+    b = bytearray(0x100 + 64 * len(flags_and_ids))
+    struct.pack_into("<II", b, 0x1C, len(flags_and_ids), 0x100)
+    for i, (fl, aid) in enumerate(flags_and_ids):
+        struct.pack_into("<HHIfI", b, 0x100 + i * 64, aid, 0, 0, 0.0, fl)
+    return bytes(b)
+
+
+def _flags(model):
+    import struct
+    n, o = struct.unpack_from("<II", model, 0x1C)
+    return [struct.unpack_from("<I", model, o + i * 64 + 0x0C)[0] for i in range(n)]
+
+
+def _fake_kit_modules(keyed):
+    """The kit's convert / m2edit / m2model as far as keep_needed_anims uses them."""
+    import struct
+    import types
+
+    def external_set(md20):
+        n, o = struct.unpack_from("<II", md20, 0x1C)
+        out = []
+        for i in range(n):
+            aid, var, _d, _s, fl = struct.unpack_from("<HHIfI", md20, o + i * 64)
+            if not fl & 0x60:
+                out.append((i, aid, var))
+        return out
+
+    class Builder:                                  # the kit's copy_anims: every .anim of the source
+        def __init__(self, built, man):
+            self.built, self.man, self.written = built, man, []
+
+        def read_built(self, rel):
+            return self.built[rel]
+
+        def have(self, path):
+            return False
+
+        def write(self, dst, data, kind, meta):
+            self.written.append(dst)
+
+        def copy_anims(self, src_rel, rel):
+            for k, v in self.man.items():
+                if k.endswith(".anim"):
+                    self.write(rel[:-3] + v["path"][len(src_rel) - 3:], b"", "anim", {})
+    convert = types.SimpleNamespace(MAX_ANIM_ID=505, Builder=Builder,
+                                    required_external_animations=lambda b: [x for x in external_set(b) if x[0] in keyed])
+    m2edit = types.SimpleNamespace(repack=lambda b: b, union_bounds=lambda b: (b, False))
+    m2model = types.SimpleNamespace(external_set=external_set,
+                                    anim_name=lambda path, a, v: "%s%04d-%02d.anim" % (path[:-3], a, v))
+    return convert, m2edit, m2model
+
+
+def test_a_sequence_that_keys_nothing_is_made_resident_and_only_streamed_anims_are_copied():
+    convert, m2edit, m2model = _fake_kit_modules(keyed={1})
+    assert L.keep_needed_anims(convert, m2edit, m2model)
+    # 0 resident, 1 external and keyed, 2 external keying nothing, 3 an alias, 4 beyond 3.3.5's ids
+    model = _sequences((0x20, 0), (0, 4), (0, 5), (0x40, 6), (0, 600))
+    assert _flags(m2edit.repack(model)) == [0x20, 0, 0x20, 0x40, 0]
+    assert _flags(m2edit.union_bounds(model)[0]) == [0x20, 0, 0x20, 0x40, 0]
+    b = convert.Builder({"Helm_PaM.m2": m2edit.repack(model)},
+                        {"helm.m2": {"path": "Helm.m2"}, "helm0004-00.anim": {"path": "Helm0004-00.anim"},
+                         "helm0005-00.anim": {"path": "Helm0005-00.anim"}})
+    b.copy_anims("Helm.m2", "Helm_PaM.m2")
+    assert b.written == ["Helm_PaM0004-00.anim"] and "write" not in b.__dict__
+    convert.mark_unused_anims_resident = object()                         # a kit that does it itself
+    assert not L.keep_needed_anims(convert, m2edit, m2model)
+
+
+def test_the_build_plan_forgets_displays_no_longer_selected(tmp_path):
+    import types
+    (tmp_path / "build").mkdir()
+    (tmp_path / "selection.json").write_text(json.dumps({"displays": {"1": {}, "2": {}}}))
+    (tmp_path / "build" / "plan.json").write_text(json.dumps({"1": {"ok": True}, "3": {"ok": True}}))
+    bpcore = types.SimpleNamespace(load_json=lambda p, d=None: json.load(open(p)) if os.path.isfile(p) else d,
+                                   save_json=lambda p, o: open(p, "w").write(json.dumps(o)))
+    prj = types.SimpleNamespace(path=lambda *parts: os.path.join(str(tmp_path), *parts))
+    seen, said = [], []
+    build = types.SimpleNamespace(run=lambda prj, log, only, force, extension: seen.append(
+        json.load(open(prj.path("build", "plan.json")))) or 0)
+    L.plan_follows_selection(build, bpcore)
+    assert build.run(prj, said.append, set(), False, True) == 0
+    assert seen == [{"1": {"ok": True}}] and "1 display(s) no longer selected" in said[0]
+    build.run(prj, said.append, {"3"}, False, True)                       # a partial build leaves the plan alone
+    assert len(said) == 1
+
+
+def test_a_helm_a_little_off_is_a_warning_and_other_failures_still_fail():
+    import types
+
+    class Report:
+        def __init__(self):
+            self.fails, self.notes = {}, {}
+
+        def fail(self, gate, what):
+            self.fails.setdefault(gate, []).append(what)
+
+        def note(self, gate, what):
+            self.notes.setdefault(gate, []).append(what)
+
+    def placement(prj, rep, plan, sc):
+        rep.fail("P1 placement", "helm_PaM.m2: centroid 0.13 m off retail's")
+        rep.fail("C1/C2 closure", "x.anim missing")
+    gates = types.SimpleNamespace(placement=placement)
+    L.placement_warns(gates)
+    rep = Report()
+    gates.placement(None, rep, {}, {})
+    assert rep.notes == {L.PLACEMENT_WARNING: ["helm_PaM.m2: centroid 0.13 m off retail's"]}
+    assert rep.fails == {"C1/C2 closure": ["x.anim missing"]} and "fail" not in rep.__dict__
+
+
+# -- the kit's gates, as the workbench answers them --------------------------------------
+def test_newtech_stopping_is_answered_by_learning_and_the_stats_follow_the_tables(tmp_path, monkeypatch):
+    kit, work, data = _project(tmp_path, monkeypatch)
+    led = {"scan": {"ok": True}, "select": {"ok": True}}
+    (work / "reports" / "steps.json").write_text(json.dumps(led))
+    ran, learned, hooked = [], [], []
+
+    def kit_step(args, step="", local=None, cwd=None):
+        ran.append(" ".join(a for a in args if not a.startswith(str(tmp_path)) and a != "--work"))
+        if args[0] == "newtech" and "--learn" in args:
+            learned.append(1)
+            return 0
+        ok = args[0] != "newtech" or bool(learned)
+        if args[0] == "newtech" and not ok:
+            (work / "reports" / "newtech.json").write_text(json.dumps({"new": {"m2.material_flags": ["2048"]}}))
+        led[args[0]] = {"ok": ok}
+        (work / "reports" / "steps.json").write_text(json.dumps(led))
+        return 0 if ok else 1
+    monkeypatch.setattr(kit, "_run", kit_step)
+    kit.hooks["tables"] = lambda k: hooked.append(list(ran)) or True
+    assert kit.build()
+    assert ran[:4] == ["fetch", "newtech", "newtech --learn", "newtech"] and ran[-1] == "sheet"
+    assert hooked == [ran[:ran.index("tables") + 1]]                     # right after the tables
+    assert any("m2.material_flags 2048" in line and "learns it" in line for line in kit.lines)
+
+
+def test_the_audit_says_which_piece_and_body_a_line_is_about(tmp_path, monkeypatch):
+    kit, work, data = _project(tmp_path, monkeypatch)
+    (work / "build").mkdir()
+    plan = {"710295": {"items": [{"name": "Astral Gladiator's Chain Helm"}],
+                       "row": {"model": ["Backport\\helm_mail_raidshaman_d_01__c532.mdx", ""], "tex": ["Backport\\7113806", ""]}},
+            "751019": {"items": [{"name": "Some Helm"}], "row": {"model": ["", ""]}}}
+    (work / "build" / "plan.json").write_text(json.dumps(plan))
+    warn = "Item\\ObjectComponents\\Head\\Backport\\helm_mail_raidshaman_d_01__c532_PaM.m2: centroid 0.13 m off retail's"
+    (work / "reports" / "audit.json").write_text(json.dumps({
+        "notes": {K.PLACEMENT_WARNING: [warn, warn]},
+        "fails": {"C1/C2 closure": ["Item\\x_BeF0060-00.anim missing (d751019 helm anim)"]}}))
+    got = kit.audit_notes()
+    assert got["warnings"] == [{"display": "710295", "name": "Astral Gladiator's Chain Helm", "lines": [warn],
+                                "bodies": ["Pandaren male"], "gates": []}]
+    assert got["fails"] == []                                             # the ledger says the audit passed
+    (work / "reports" / "steps.json").write_text(json.dumps({"audit": {"ok": False}}))
+    fails = kit.audit_notes()["fails"]
+    assert [(f["display"], f["name"], f["gates"]) for f in fails] == [("751019", "Some Helm", ["C1/C2 closure"])]
+    assert K.display_of("display 710295 (chest): retail 3D", plan) == "710295" and K.display_of("nothing", plan) == ""

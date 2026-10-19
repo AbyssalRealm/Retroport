@@ -411,3 +411,11 @@ canvas.viewer:active { cursor: grabbing; }
 
 .updated-banner { background: #3a2a12; border: 1px solid var(--warn); color: var(--warn); border-radius: var(--radius);
   padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
+
+/* what the kit's audit said */
+.kit-audit { margin: 10px 0 4px; display: grid; gap: 8px; }
+.audit-row { border-left: 3px solid var(--line, #444); padding: 4px 0 4px 10px; }
+.audit-row.bad { border-left-color: var(--bad, #d05050); }
+.audit-row.warn { border-left-color: var(--warn, #d0a040); }
+.audit-row pre { white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; max-height: 160px; overflow: auto; }
+.left-out { margin-top: 3px; }

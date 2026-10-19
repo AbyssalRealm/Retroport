@@ -490,9 +490,12 @@ def plan_basket(catalogs: dict[str, Catalog], basket: list[dict], installed: lis
     for e in basket:
         cat = catalogs.get(e.get("source", ""))
         looks, ids = cat.looks_for(e) if cat else ([], [])
+        skip = {str(d) for d in e.get("leave_out") or []}             # pieces the user left out of it
+        left = [l for l in looks if str(l.get("display")) in skip]
+        looks = [l for l in looks if str(l.get("display")) not in skip]
         out = {k: e.get(k) for k in ("kind", "source", "id", "name", "icon", "quality", "sub")} | {
-            "key": entry_key(e), "looks": looks, "items": len(ids),
-            "state": "loading" if cat is None else "ready" if looks else "missing"}
+            "key": entry_key(e), "looks": looks, "left_out": left, "items": len(ids),
+            "state": "loading" if cat is None else "ready" if looks or left else "missing"}
         mine = list(dict.fromkeys(l["display"] for l in looks if l["display"]))
         others = list(dict.fromkeys(first[d] for d in mine if d in first))
         out["shares"] = [entries[i]["name"] for i in others]

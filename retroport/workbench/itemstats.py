@@ -140,6 +140,26 @@ def piece_sets(edits: dict, set_ids: dict) -> dict[str, int]:
     return out
 
 
+# AzerothCore's item_template columns, as its worldserver reads them (BuyPrice as int32). MySQL
+# refuses an UPDATE with a value outside its column - the whole piece's UPDATE - and the piece stays
+# the kit's level-1 copy; so every value is kept inside. (AzerothCore has no StatsCount column: it
+# counts the stats it loads.)
+INT32, UINT32 = (-2 ** 31, 2 ** 31 - 1), (0, 2 ** 32 - 1)
+LIMITS = {"Quality": (0, 7), "ItemLevel": (0, 65535), "RequiredLevel": (0, 255), "bonding": (0, 255),
+          "AllowableClass": INT32, "subclass": (0, 255), "Material": (-128, 127), "armor": UINT32, "block": UINT32,
+          "MaxDurability": (0, 65535), "SellPrice": UINT32, "BuyPrice": (0, INT32[1]), "dmg_min1": (0, INT32[1]),
+          "dmg_max1": (0, INT32[1]), "dmg_type1": (0, 255), "delay": (0, 65535), "ammo_type": (0, 255),
+          "maxcount": INT32, "socketBonus": INT32, "itemset": UINT32,
+          **{f"stat_type{k}": (0, 255) for k in range(1, 11)}, **{f"stat_value{k}": INT32 for k in range(1, 11)},
+          **{f"socketColor_{k}": (-128, 127) for k in range(1, 4)}, **{f"socketContent_{k}": INT32 for k in range(1, 4)}}
+
+
+def column_value(col: str, v):
+    """``v`` kept inside ``col``'s range (text and floats as they are)."""
+    lo, hi = LIMITS.get(col, (None, None))
+    return min(max(v, lo), hi) if lo is not None and isinstance(v, int) and not isinstance(v, bool) else v
+
+
 def updates(edits: dict, ids: dict, kit: dict[int, dict], set_ids: dict) -> list[str]:
     """One UPDATE per touched piece (the kit's row stays as it wrote it otherwise)."""
     out = []
@@ -167,7 +187,6 @@ def updates(edits: dict, ids: dict, kit: dict[int, dict], set_ids: dict) -> list
         if at and cls == 4 and sub in ARMOUR_TYPES and inv != 16 and int(at) in ARMOUR_TYPES:
             set_["subclass"], set_["Material"] = int(at), MATERIAL[int(at)]
         stats = [(int(t), int(v)) for t, v in (p.get("stats") or []) if int(t) in STATS and int(v)][:10]
-        set_["StatsCount"] = len(stats)
         for k in range(10):
             t, v = stats[k] if k < len(stats) else (0, 0)
             set_[f"stat_type{k + 1}"], set_[f"stat_value{k + 1}"] = t, v
@@ -194,7 +213,7 @@ def updates(edits: dict, ids: dict, kit: dict[int, dict], set_ids: dict) -> list
         set_["itemset"] = in_set or 0
         if p.get("description") is not None:
             set_["description"] = _q(p.get("description") or "")
-        out.append("UPDATE `item_template` SET " + ", ".join(f"`{k}` = {v}" for k, v in set_.items()) +
+        out.append("UPDATE `item_template` SET " + ", ".join(f"`{k}` = {column_value(k, v)}" for k, v in set_.items()) +
                    f" WHERE `entry` = {int(entry)};")
     return out
 

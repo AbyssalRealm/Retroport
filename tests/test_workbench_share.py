@@ -100,14 +100,21 @@ def test_the_kit_is_fetched_once_at_its_pinned_commit(tmp_path):
     assert got == [f"https://codeload.github.com/Kirazul/wow-retail-backport/zip/{D.PINNED['kit']['ref']}"]
 
 
-def test_without_the_backport_helper_the_kit_uses_the_workbenchs_own_copies(tmp_path, monkeypatch):
+def test_the_kit_and_equip_plus_tools_are_always_the_workbenchs_own_copies(tmp_path, monkeypatch):
     monkeypatch.setattr(K, "HELPER_SETTINGS", str(tmp_path / "none.json"))
-    monkeypatch.setattr(K, "REPO", str(tmp_path / "no-repo"))
     data = str(tmp_path / "wb")
     kit = K.Kit({}, None, "", "", data)
     assert kit.cfg.bp == D.entry(data, "kit") and kit.cfg.work == os.path.join(data, "backport-project")
-    assert kit.fetched("kit") and kit.fetched("equip-plus")
+    assert kit.cfg.tools == os.path.dirname(D.entry(data, "equip-plus"))
     assert not any("bp.py" in p for p in kit.problems())                 # Install fetches it first
+    # neither the helper's kit nor an older setting points it at another copy
+    (tmp_path / "helper.json").write_text(json.dumps({"kit": str(tmp_path / "my-clone"), "work": str(tmp_path / "w")}))
+    monkeypatch.setattr(K, "HELPER_SETTINGS", str(tmp_path / "helper.json"))
+    kit = K.Kit({"bp": str(tmp_path / "my-clone" / "bp.py"), "tools": str(tmp_path / "old-tools")}, None, "", "", data)
+    assert kit.cfg.bp == D.entry(data, "kit") and kit.cfg.tools == os.path.dirname(D.entry(data, "equip-plus"))
+    kit.set_settings({"bp": "x", "tools": "y", "work": str(tmp_path / "w2")})
+    assert kit.cfg.bp == D.entry(data, "kit") and kit.cfg.work == str(tmp_path / "w2")
+    assert set(kit.own_copies()) == {"kit", "equip-plus"} and not kit.own_copies()["kit"]["have"]
 
 
 # -- open-folder patches ---------------------------------------------------------------------
@@ -189,3 +196,44 @@ def test_prove_gates_skips_a_model_whose_moved_bone_draws_nothing():
     assert L.moves_what_it_ships(body, skin([0, 1]))                # the moved bone carries a drawn vertex
     assert not L.moves_what_it_ships(body, skin([1]))               # a trimmed skin: nothing it draws moves
 
+
+def test_a_workbench_knows_which_copy_it_is(tmp_path, monkeypatch):
+    from retroport.workbench import app as A
+    info = SV.app_info()
+    assert info["version"].endswith("(source)") and os.path.isfile(os.path.join(info["from"], "pyproject.toml"))
+    mine = {"from": "D:\\Retroport Workbench", "code": 100.0, "version": "0.3.0"}
+    assert A.same_copy({"from": "d:\\retroport workbench", "code": 100.0}, mine)
+    assert not A.same_copy({"from": "I:\\repo", "code": 100.0}, mine)            # another copy
+    assert not A.same_copy({"from": mine["from"], "code": 50.0}, mine)           # this one, older code
+    assert not A.same_copy({}, mine)                                             # too old to say
+
+
+def test_a_running_workbench_stops_for_another_copy_but_never_in_a_kit_job():
+    import types
+    from retroport.workbench import app as A
+    wb = types.SimpleNamespace(quitting=False, last_hello=1.0, last_bye=0.0, kit=types.SimpleNamespace(busy=lambda: False))
+    assert not A.should_end(wb, 0.0, 2.0, True)
+    wb.quitting = True
+    assert A.should_end(wb, 0.0, 2.0, True)
+    wb.kit.busy = lambda: True
+    assert not A.should_end(wb, 0.0, 2.0, True)
+    w = types.SimpleNamespace(kit=types.SimpleNamespace(busy=lambda: True), quitting=False)
+    with pytest.raises(RuntimeError, match="busy"):
+        SV.Workbench.quit(w)
+
+
+def test_a_piece_left_out_is_its_entrys_other_looks_for_the_kit():
+    looks = [{"display": 1, "name": "Helm"}, {"display": 2, "name": "Chest"}]
+    cat = types.SimpleNamespace(looks_for=lambda e: (looks, [10, 11]))
+    basket = [{"kind": "set", "source": "retail", "id": 5, "name": "A", "leave_out": ["1"]}]
+    plan = C.plan_basket({"retail": cat}, basket)
+    e = plan["entries"][0]
+    assert [l["display"] for l in e["looks"]] == [2] and [l["display"] for l in e["left_out"]] == [1]
+    assert plan["looks"] == 1
+    wb = types.SimpleNamespace(basket=lambda: basket)
+    assert SV.Workbench.kit_basket(wb, plan) == [{"kind": "look", "source": "retail", "id": 2, "name": "Chest"}]
+    wb.kit_basket = lambda plan: SV.Workbench.kit_basket(wb, plan)
+    assert SV.Workbench.kit_args(wb, plan) == ["--display", "2"]
+    plan["entries"][0]["state"] = "loading"
+    with pytest.raises(RuntimeError, match="loading"):
+        SV.Workbench.kit_basket(wb, plan)

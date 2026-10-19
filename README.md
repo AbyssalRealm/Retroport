@@ -65,10 +65,11 @@ server - in one click, with a backup of everything it changes and an Undo.
   [WoWDBDefs](https://github.com/wowdev/WoWDBDefs) definitions folder and the
   [community listfile](https://github.com/wowdev/wow-listfile)). The bodies the character view
   dresses come from BfA 8.3.7, the same way.
-- **Backport kit** - the project folder the conversion works in, and where its programs live (they
-  are fetched for you; point them elsewhere only to use your own copies - Settings says when a copy is
-  too old for live physics). Equip Plus's 3D pieces (when your client has Equip Plus, always, or
-  never), and its live physics and better-fit options in your client.
+- **Backport kit** - the project folder the conversion works in (a folder of its own: the kit fills
+  it with its files). The kit and Equip Plus's tools are always the app's own copies, downloaded by
+  the first Install at the versions this release is tested with - the same for everyone. Equip
+  Plus's 3D pieces (when your client has Equip Plus, always, or never), and its live physics and
+  better-fit options in your client.
 
 Everything the app keeps is in your user folder:
 
@@ -121,6 +122,17 @@ game) next to its *better fit* options. Your client needs Equip Plus 1.3.0 or ne
 - **Install stopped at prove-gates: "M8 motion MISSED <- the gate is broken"** - a false alarm in
   0.1.0 (the kit's self-test planted a fault in a part of a model the patch doesn't ship); 0.2.0
   plants it where the check can see it. Update the app and Install again.
+- **The kit's audit stopped the install** - the Backport page names each piece it stopped on, with
+  *Leave this piece out*: the rest of its set installs, and the Basket page can put it back. A helm
+  that only sits a little off on some bodies (often a race your client added) doesn't stop the
+  install: it's listed as a warning - look at its preview picture.
+- **"Retail uses something the kit hasn't seen before"** - new retail technology: the kit learns it
+  for your project and goes on; the audit still checks every file it makes.
+- **Which copy of the app is running?** - the version is next to the name at the top (hover it for
+  the folder it runs from). Starting another copy while one runs asks to replace it.
+- **The item SQL fails** - it's written for AzerothCore's world database. Install again after
+  updating: older versions wrote a `StatsCount` column AzerothCore doesn't have, and a sell price can
+  no longer go past what the column holds (429,496 gold).
 - **Items are level 1 with no stats** - the conversion makes cosmetic copies; give them stats in
   **Stats** and Install again (the Backport page says how many pieces still have none).
 - **No 3D preview** - the preview needs WebGL 2; update your graphics driver.

@@ -21,12 +21,35 @@ has finished; started again while it runs, it opens another window on it. Its lo
 - **Settings** (the first run opens it): the 3.3.5a client folder, the server's dbc folder, where
   the items come from, the kit's project. Each Browse button opens Windows' own folder picker,
   and each field says what it found there.
-- **The kit and Equip Plus are fetched, never bundled**: the first Install downloads the retail
-  backport kit (it carries no license, so it can't be passed on) and Equip Plus's tools from their
-  authors' GitHub at the commits this workbench is checked with (`retroport/workbench/deps.py`).
-  The kit is always run through `kitlocal`, which shows it WarcraftXL's open-folder patches (as
-  Equip Plus installs its pieces) when its own client reader doesn't know them - in that process
-  only, its files untouched. Its `prove-gates` (which plants 8 known defects in a copy of the build
+- **The kit and Equip Plus are fetched, never bundled - and always the workbench's own copies**: the
+  first Install downloads the retail backport kit (it carries no license, so it can't be passed on
+  or changed and passed on) and Equip Plus's tools from their authors' GitHub at the commits this
+  workbench is checked with (`retroport/workbench/deps.py`), into `<data>\deps`. No setting points
+  the workbench at another copy (the Backport Helper's kit, a clone with edits of its own): what
+  runs is the same for everyone, and a fix to how the kit runs lives in `kitlocal`.
+- **What `kitlocal` changes in the kit's run** - in its process only, the kit's files untouched;
+  each is a wrapper around the kit's own function, and each a fix to offer the kit's author:
+  * open-folder patches: WarcraftXL clients mount a FOLDER named like an archive
+    (`Data\patch-H.MPQ\...`, as Equip Plus installs its pieces); the kit's client reader is shown them;
+  * cached tables an older kitlocal wrote with an `ID` column wago's don't have (ModelFileData,
+    TextureFileData - newtech called the column new retail technology) are put right;
+  * a sequence a model calls external but keys nothing for is made resident, and a model gets only
+    the `.anim` files of sequences it streams (the kit copied a source model's every `.anim` to each
+    per-race helm and the audit wanted thousands nobody had made: "C1/C2 closure ... .anim missing");
+  * the build plan forgets displays no longer selected (the audit checked every display the plan
+    ever held);
+  * a helm that sits a little off a client body ("P1 placement") is a note, `P1 placement
+    (warning)`, not a failure - prove-gates' own audit runs in a process of its own, unwrapped, so
+    its planted misplaced helm is still caught;
+  * prove-gates plants where the audit can see it (below).
+- **The kit's gates, answered on the page**: newtech stopping on retail features the kit hasn't seen
+  runs its own `newtech --learn` and the check again (`Kit.learn`); an audit that stops the install
+  is listed on the Backport page by piece (`Kit.audit_notes`: a line's display from the
+  `d<display>` it names or the model/texture its file was made from) with *Leave this piece out* -
+  the basket entry keeps a `leave_out` list, and the kit selects that entry as its other looks
+  (`--display` each; the select arguments are recorded with the selection, so leaving a piece out or
+  putting it back is a new selection).
+- **Its `prove-gates` (which plants 8 known defects in a copy of the build
   and expects the audit to catch each) is shown only the models a planted defect can show in: the
   manifest also lists files the build made but doesn't ship (a shoulder's untrimmed source beside
   its trimmed variant), and the "flying part" defect (M8) moves a model's first keyed bone, which a
@@ -159,10 +182,15 @@ and price are stored per piece as numbers.
   `Spell.dbc` description with `$s1`, `$h`, `$d` and `$12345s1` filled in (`itemstats.spell_text`),
   or any spell by id. **Socket bonuses** are the enchantments real WotLK items use as one.
 
-At Install, after the kit's steps (`Kit.hooks["built"]`): a piece whose armour type changed gets
-that subclass and material in the kit's `out/dbc/Item.dbc` (from the kit's own values, so it's
-idempotent), and the kit packs again when the table changed; `out/sql/retroport-items.sql` is the
-kit's SQL followed by one `UPDATE item_template` per piece - the file the Backport page shows. After
+Right after the kit writes its item tables (`Kit.hooks["tables"]`, so the SQL is there even when a
+later step stops) and again after its steps (`Kit.hooks["built"]`): a piece whose armour type changed
+gets that subclass and material in the kit's `out/dbc/Item.dbc` (from the kit's own values, so it's
+idempotent; after the steps, the kit packs again when the table changed); `out/sql/retroport-items.sql`
+is the kit's SQL followed by one `UPDATE item_template` per piece - the file the Backport page shows.
+The UPDATEs are AzerothCore's columns (it has no `StatsCount`: it counts the stats it loads), each
+value kept inside its column's range (`itemstats.LIMITS`; `BuyPrice` as the int32 the worldserver
+reads it as) - MySQL refuses a whole UPDATE with one value out of range, and the piece would stay
+the kit's level-1 copy. After
 the patches are placed (`Kit.hooks["installed"]`): the item sets (ids from 3000, kept per set in
 `<data>/item-set-ids.json`) are added to the client's own `ItemSet.dbc` - read from below the kit's
 patch - written *into* the kit's patch (`retroport.mpq.add_files`: the file is stored after the
@@ -189,8 +217,7 @@ documents the client-mod contract (its `references/client-extension.md` section 
 runs it, from `DBFilesClient\WXLEquipPlusPhysics.phy2`, which its converter (`physics_table.py`)
 writes into the Equip Plus patch from the kit's `.phys` data. So the converter Install runs must be
 1.3.0 or newer: `deps.PINNED` holds its commit, a fetched copy carries the commit it is
-(`.retroport-ref`) and is fetched again when the pin moves, and Settings flags a tools folder older
-than 1.3.0 (its `wxl.json`). The client's DLL is new enough when it names that table. The switch
+(`.retroport-ref`) and is fetched again when the pin moves. The client's DLL is new enough when it names that table. The switch
 is the client's: `[Physics] Enabled` and `[Fit] RetargetPivots` / `RetargetScale` in
 `Extensions\wxl-equip-plus\WXLExtendedEquipment.ini`, which Settings changes in place
 (`Kit.set_equip_plus_options`: those keys only, a copy of the file kept the first time).

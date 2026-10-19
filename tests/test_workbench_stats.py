@@ -221,16 +221,6 @@ def test_equip_plus_physics_options_change_only_their_keys(tmp_path, monkeypatch
     assert not kit.set_equip_plus_options(True, True, False)                          # nothing to change
 
 
-def test_equip_plus_tools_older_than_physics_are_told_apart(tmp_path, monkeypatch):
-    monkeypatch.setattr(K, "HELPER_SETTINGS", str(tmp_path / "none.json"))
-    tools = tmp_path / "wxl-equip-plus" / "tools"
-    tools.mkdir(parents=True)
-    (tmp_path / "wxl-equip-plus" / "wxl.json").write_text(json.dumps({"extension": {"version": "1.2.2"}}))
-    kit = K.Kit({"tools": str(tools)}, None, "", "", str(tmp_path / "wb"))
-    assert kit.equip_plus_tools_version() == "1.2.2"
-    assert K.version_tuple("1.2.2") < K.PHYSICS_VERSION <= K.version_tuple("1.3.0")
-
-
 def test_a_fetched_copy_is_fetched_again_when_its_pin_moves(tmp_path, monkeypatch):
     from retroport.workbench import deps as D
     import io, zipfile
@@ -247,3 +237,14 @@ def test_a_fetched_copy_is_fetched_again_when_its_pin_moves(tmp_path, monkeypatc
     assert not D.have(str(tmp_path), "equip-plus")                                    # an older copy: fetch again
     D.fetch(str(tmp_path), "equip-plus", say=lambda m: None, get=get)
     assert open(D.entry(str(tmp_path), "equip-plus")).read().endswith("f" * 40)
+
+
+def test_every_value_stays_inside_its_azerothcore_column():
+    kit = {900032: {"entry": 900032, "class": 2, "subclass": 8, "InventoryType": 17, "name": "Preyseeker's Falchion"}}
+    edits = {"global": {}, "pieces": {"715489": {"sell": 9999999990000, "durability": 99999, "stats": [[7, 3000]],
+                                                 "dmg_min": 3500, "dmg_max": 5500, "delay": 1500}}, "sets": []}
+    sql = I.updates(edits, {"item": {"715489": 900032}}, kit, {})[0]
+    assert "StatsCount" not in sql                               # AzerothCore counts the stats it loads
+    assert "`SellPrice` = 4294967295" in sql and "`BuyPrice` = 2147483647" in sql
+    assert "`MaxDurability` = 65535" in sql and "`stat_value1` = 3000" in sql and "`delay` = 1500" in sql
+    assert I.column_value("Quality", 9) == 7 and I.column_value("name", "'x'") == "'x'"

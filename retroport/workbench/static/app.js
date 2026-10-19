@@ -75,7 +75,7 @@ async function pollStatus() {
     return setTimeout(pollStatus, 3000);
   }
   const st = S.status, ready = st.sources.filter(s => s.state === "ready");
-  $("#updated").hidden = !st.updated;
+  appState(st);
   $("#log").textContent = [...st.problems.map(p => "! " + p), ...st.log.slice(-12)].join("\n");
   $("#settings-state").hidden = !st.problems.length;
   if (st.setup && !S.setupShown) { S.setupShown = true; show("settings"); }   // first run: where's the client?
@@ -387,6 +387,32 @@ function removeEntries(keys, what) {
   toast(`Removed ${what}`, "Undo", () => { S.basket.push(...gone.filter(g => !inBasket(keyOf(g)))); saveBasket(); });
 }
 
+// which workbench this page talks to; a page whose workbench was replaced by another copy closes
+// (or, left open, reloads from the new one)
+function appState(st) {
+  if (st.app) {
+    $("#app-version").textContent = "v" + st.app.version.replace(" (source)", "");
+    $("#app-version").title = `Retroport Workbench ${st.app.version}\nrunning from ${st.app.from}`;
+  }
+  if (S.instance && st.instance && st.instance !== S.instance) return location.reload();
+  S.instance = S.instance || st.instance;
+  if (st.quitting) {
+    $("#updated").textContent = "Another copy of the workbench took over - close this window.";
+    $("#updated").hidden = false;
+    try { window.close(); } catch (e) { /* not ours to close */ }
+    return;
+  }
+  $("#updated").hidden = !st.updated;
+}
+
+// the basket as the server has it now (it changed there: a piece left out or put back)
+async function refreshBasket() {
+  try { S.basket = await api("/api/basket"); } catch (e) { return; }
+  $("#basket-count").textContent = S.basket.length;
+  if (S.view === "basket") renderBasket();
+  if (S.view === "backport") loadKit();
+}
+
 // The basket page: each entry with the looks it brings (the kit builds one per model), what it
 // shares with another entry, and what changed since the install in your client.
 async function renderBasket() {
@@ -468,8 +494,34 @@ function basketRow(e, plan) {
         b.addEventListener("click", () => openEntry(e, l.item));
         return b;
       })) : null,
+      (e.left_out || []).length ? el("div", {class: "left-out muted small"}, "Left out: ", ...e.left_out.flatMap((l, i) => [
+        i ? ", " : "", l.name || `look ${l.display}`, " ",
+        el("a", {href: "#", onclick: async ev => { ev.preventDefault();
+          try { await post("/api/basket/leave-out", {display: l.display, out: false}); await refreshBasket(); }
+          catch (err) { toast(err.message); } }}, "put back")])) : null,
       warn ? el("div", {class: "warnline"}, warn) : null),
     el("button", {class: "remove", title: "Remove from the basket", onclick: () => removeEntries([e.key], e.name)}, "×"));
+}
+
+// what the kit's audit said: helms that sit a little off (Install goes on), and what stopped it
+function renderAudit(a, running) {
+  const leave = (g, out) => el("button", {class: "btn ghost small-btn", disabled: running || !g.display, onclick: async () => {
+    try { await post("/api/basket/leave-out", {display: g.display, out}); toast(out ? `${g.name} left out - Install again` : `${g.name} put back`);
+          await refreshBasket(); } catch (e) { toast(e.message); }
+  }}, out ? "Leave this piece out" : "Put it back");
+  const row = (g, cls, words) => el("div", {class: "audit-row " + cls},
+    el("div", {}, el("b", {}, g.name), " ", el("span", {class: "muted"}, words(g)), " ", g.display ? leave(g, true) : null),
+    el("details", {}, el("summary", {class: "muted small"}, "what the kit's audit says"),
+      el("pre", {class: "small"}, g.lines.join("\n"))));
+  const fails = a.fails || [], warns = a.warnings || [];
+  $("#k-audit").replaceChildren(
+    ...(fails.length ? [el("div", {class: "warnline"}, `The kit's audit stopped the install: ${plural(fails.length, "piece")} ` +
+        "would be broken in game. Leave them out and Install again - or take them out of the basket.")] : []),
+    ...fails.map(g => row(g, "bad", g => g.gates.join(", "))),
+    ...(warns.length ? [el("div", {class: "muted"}, `The last build has ${plural(warns.length, "warning")} - Install goes on with ` +
+        "it: a helm sits a little off on some bodies (look at its preview picture; leave it out if it looks wrong)")] : []),
+    ...warns.map(g => row(g, "warn", g => g.bodies.length ? `on ${g.bodies.join(", ")}` : "")));
+  $("#k-audit").hidden = !(fails.length || warns.length);
 }
 
 // ---------------------------------------------------------------------------- settings
@@ -539,17 +591,11 @@ function renderSettings() {
   stLocalDeps();
   $("#st-kit").replaceChildren(
     stField("work", "Project folder", k.work, {hint: "where the kit builds; Install makes it if it's new"}),
-    stField("bp", "The kit (bp.py)", k.bp, {file: true, patterns: [["bp.py", "bp.py"]]}),
-    (() => {
-      const f = stField("tools", "Equip Plus tools folder", k.tools);
-      const old = v.checks.tools_version;
-      if (old) f.append(el("span", {class: "fcheck warn"}, "! " + old[1], " ",
-        el("button", {class: "btn ghost small-btn", type: "button", onclick: () => {
-          $("#st-tools").value = k.own_tools;
-          toast("Saved with Save - Install downloads that copy (its latest) the first time");
-        }}, "Use the workbench's own copy")));
-      return f;
-    })(),
+    el("div", {class: "field"}, el("span", {class: "flabel"}, "The kit and Equip Plus's tools"),
+      el("span", {class: "fhint muted"}, "The workbench's own copies, the same for everyone - downloaded from their " +
+         "authors' GitHub by the first Install, at the commits this workbench is checked with:"),
+      ...Object.values(k.own || {}).map(o => el("span", {class: "fcheck " + (o.have ? "ok" : "")},
+        `${o.have ? "✓" : "•"} ${o.label} - github.com/${o.repo} at ${o.ref}` + (o.have ? "" : " (Install downloads it)")))),
     el("label", {class: "check"}, el("input", {type: "checkbox", id: "st-local", checked: k.local}),
        " The kit reads retail from my install when its project's build matches"),
     (() => {
@@ -586,7 +632,7 @@ async function saveSettings() {
     retail: {kind: kind("retail"), path: val("retail-path")},
     bfa: {kind: kind("bfa"), path: val("bfa-path"), browse: $("#st-bfa-browse").checked},
     dbd: val("dbd"), listfile: val("listfile"),
-    kit: {work: val("work"), bp: val("bp"), tools: val("tools"), local: $("#st-local").checked,
+    kit: {work: val("work"), local: $("#st-local").checked,
           armor_pieces: $("#st-armor_pieces").checked, equip_plus: $("#st-equip_plus").value}};
   if ($("#st-ep-physics")) body.equip_plus_options = {physics: $("#st-ep-physics").checked, pivots: $("#st-ep-pivots").checked,
                                                        scale: $("#st-ep-scale").checked};
@@ -674,6 +720,7 @@ function renderKit() {
     `have no stats yet - they'll be level-1 cosmetic copies. <a href="#" data-go="stats">Give them stats</a>`);
   if (st.equip_plus && !st.equip_plus.wanted) notes.push(`Equip Plus isn't in your client: Install leaves out the extra 3D pieces ` +
     `(skirts, boot shells, buckles, 3D capes); everything else works on any 3.3.5a client.`);
+  renderAudit(st.audit || {warnings: [], fails: []}, running);
   $("#stats-state").textContent = st.stats && st.stats.without ? st.stats.without : "";
   $("#stats-state").hidden = !(st.stats && st.stats.without);
   $("#k-data").innerHTML = notes.join("<br>");
@@ -1090,7 +1137,7 @@ async function init() {
   const hello = () => fetch("/api/hello", {method: "POST"}).catch(() => {});
   hello(); setInterval(hello, 30000);
   setInterval(async () => {                               // code changed under a running server: say so
-    try { $("#updated").hidden = !(await api("/api/status")).updated; } catch (e) { /* not answering */ }
+    try { appState(await api("/api/status")); } catch (e) { /* not answering */ }
   }, 30000);
   addEventListener("pageshow", e => { if (e.persisted) hello(); });
   addEventListener("pagehide", () => navigator.sendBeacon("/api/bye"));

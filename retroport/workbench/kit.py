@@ -5,8 +5,12 @@ copied: the kit through ``kitlocal`` (retail from the local install) when the pr
 that install's build, else as it is (wago.tools). What the console Backport Helper does, the page
 does the same way, so either can carry on from the other:
 
-* settings come from the helper's ``%USERPROFILE%\\.wxl-equip-plus\\helper.json`` (kit, client
-  Data, project, server dbc) unless the workbench's own settings say otherwise;
+* the kit and Equip Plus's tools are always the workbench's own copies, downloaded by the first
+  Install at the commits ``deps`` pins - the same code for everyone, whatever else is on the disk;
+* settings come from the helper's ``%USERPROFILE%\\.wxl-equip-plus\\helper.json`` (client Data,
+  project, server dbc) unless the workbench's own settings say otherwise;
+* the kit's ``newtech`` stopping on retail features it hasn't seen is answered with its own
+  ``newtech --learn`` and the check again (the audit still checks every file the build makes);
 * the steps are the kit's (its ledger ``<work>/reports/steps.json`` says which passed); a re-scan
   moves the kit's own patch out of Data while it reads the client, as the helper does;
 * install backs up what it replaces under ``<work>/backups/<time>/`` with an ``install.json``
@@ -56,11 +60,11 @@ SERVER_TABLES = ("Item", "ItemDisplayInfo")
 
 @dataclass
 class KitSettings:
-    bp: str = ""                 # the kit's scripts\bp.py
+    bp: str = ""                 # the kit's scripts\bp.py (the workbench's own copy)
     work: str = ""               # the kit project folder
     client_data: str = ""        # the 3.3.5 client's Data folder
     server_dbc: str = ""         # the server's dbc folder ("" = leave the server alone)
-    tools: str = ""              # Equip Plus's tools folder (backport_to_equipplus.py, merge_server_dbc.py)
+    tools: str = ""              # Equip Plus's tools folder (the workbench's own copy)
     local: bool = True           # retail from the local install when the project is pinned to its build
     armor_pieces: bool = True    # Equip Plus: also the pieces skinned to retail's HD skeletons
     equip_plus: str = "auto"     # its 3D pieces: "auto" (when the client has Equip Plus), "on", "off"
@@ -82,20 +86,18 @@ def _save_json(path: str, obj) -> None:
     os.replace(tmp, path)
 
 
+OWN_COPIES = ("bp", "tools")      # never a setting: always the workbench's own copies
+
+
 def helper_defaults(data_dir: str = "") -> KitSettings:
-    """The Backport Helper's settings as the kit's, where it has any; else the copies the workbench
-    fetches itself (``deps``) and a project folder of its own."""
+    """The Backport Helper's settings as the kit's, where it has any (never its kit: the workbench
+    runs its own copies, ``deps``), else a project folder of the workbench's own."""
     h = _load_json(HELPER_SETTINGS, {}) or {}
-    kit = h.get("kit", "")
-    bp = os.path.join(kit, "wow-retail-backport", "scripts", "bp.py") if kit else ""
-    tools = os.path.join(REPO, "wxl-equip-plus", "tools")
-    if not os.path.isfile(bp):
-        bp = deps.entry(data_dir, "kit") if data_dir else ""
-    if not os.path.isdir(tools):
-        tools = os.path.dirname(deps.entry(data_dir, "equip-plus")) if data_dir else ""
     work = h.get("work", "") or (os.path.join(data_dir, "backport-project") if data_dir else "")
-    return KitSettings(bp=bp, work=work, client_data=h.get("client_data", ""), server_dbc=h.get("server_dbc", ""),
-                       tools=tools, armor_pieces=bool(h.get("armor_pieces", True)))
+    return KitSettings(bp=deps.entry(data_dir, "kit") if data_dir else "", work=work,
+                       client_data=h.get("client_data", ""), server_dbc=h.get("server_dbc", ""),
+                       tools=os.path.dirname(deps.entry(data_dir, "equip-plus")) if data_dir else "",
+                       armor_pieces=bool(h.get("armor_pieces", True)))
 
 
 def python_exe() -> str:
@@ -117,6 +119,36 @@ def wow_running() -> bool:
         return "wow.exe" in out.lower()
     except OSError:
         return False
+
+
+PLACEMENT_WARNING = "P1 placement (warning)"   # kitlocal's name for a helm that sits a little off
+RACE_NAMES = {"Hu": "Human", "Or": "Orc", "Dw": "Dwarf", "Ni": "Night Elf", "Sc": "Undead", "Ta": "Tauren",
+              "Gn": "Gnome", "Tr": "Troll", "Be": "Blood Elf", "Dr": "Draenei", "Pa": "Pandaren", "Kt": "Kul Tiran",
+              "Go": "Goblin", "Wo": "Worgen"}
+
+
+def display_of(message: str, plan: dict) -> str:
+    """The retail display an audit line is about: named in it (``d751019``, ``display 730387``) or
+    the display whose model or texture the file it names was made from; "" when none is."""
+    m = re.search(r"\(d(\d+)\b|\bdisplay (\d+)\b", message)
+    if m and (m.group(1) or m.group(2)) in plan:
+        return m.group(1) or m.group(2)
+    low = message.lower()
+    for d, p in plan.items():
+        row = p.get("row") or {}
+        for name in [*(row.get("model") or []), *(row.get("tex") or []), *(row.get("regions") or [])]:
+            stem = os.path.splitext(str(name).replace("/", "\\").split("\\")[-1])[0].lower()
+            if len(stem) > 5 and stem in low:
+                return d
+    return ""
+
+
+def body_of(message: str) -> str:
+    """The client body a helm file is for, from its name's race-and-sex suffix (``..._PaM.m2``)."""
+    m = re.search(r"_([A-Z][a-z])([MF])\.m2\b", message)
+    if not m:
+        return ""
+    return f"{RACE_NAMES.get(m.group(1), m.group(1))} {'male' if m.group(2) == 'M' else 'female'}"
 
 
 def basket_args(basket: list[dict]) -> list[str]:
@@ -148,7 +180,7 @@ class Kit:
                  save: callable = lambda kit_settings: None):
         base = helper_defaults(data_dir)
         for k, v in (own or {}).items():
-            if hasattr(base, k) and v not in ("", None):
+            if hasattr(base, k) and k not in OWN_COPIES and v not in ("", None):
                 setattr(base, k, v)
         self.cfg = base
         self.retail = retail                   # the retail SourceSpec (dict), or None
@@ -230,11 +262,6 @@ class Kit:
         root = self.client_root()
         return bool(root) and os.path.isfile(os.path.join(root, "Extensions", "wxl-equip-plus", "wxl-equip-plus.dll"))
 
-    def equip_plus_tools_version(self) -> str:
-        """The version of the Equip Plus tools Install runs (its wxl.json), "" when unknown."""
-        info = _load_json(os.path.join(os.path.dirname(os.path.normpath(self.cfg.tools)), "wxl.json"), {}) if self.cfg.tools else {}
-        return str(((info or {}).get("extension") or {}).get("version") or "")
-
     def equip_plus_client(self) -> dict:
         """The client's Equip Plus: there at all, its DLL new enough for live physics (1.3.0), and
         the physics and fit options of its WXLExtendedEquipment.ini."""
@@ -296,17 +323,16 @@ class Kit:
         rec = _load_json(path, {}) or {}
         rec["known"] = sorted(set(map(str, rec.get("known") or [])) | {str(d) for d in looks}, key=int)
         _save_json(path, rec)
-    def fetched(self, name: str) -> bool:
-        """Whether the setting for ``name`` is the copy the workbench fetches (Install gets it)."""
-        mine = deps.entry(self.data_dir, name)
-        path = self.cfg.bp if name == "kit" else os.path.join(self.cfg.tools, os.path.basename(mine))
-        return os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(mine))
+
+    def own_copies(self) -> dict:
+        """The kit's and Equip Plus's tools' copies: {name: {label, ref (short), have (downloaded)}}."""
+        return {name: {"label": deps.PINNED[name]["label"], "ref": deps.PINNED[name]["ref"][:7],
+                       "repo": deps.PINNED[name]["repo"], "have": deps.have(self.data_dir, name)}
+                for name in ("kit", "equip-plus")}
 
     def problems(self) -> list[str]:
         c = self.cfg
         out = []
-        if not c.bp or not (os.path.isfile(c.bp) or self.fetched("kit")):
-            out.append("the kit's bp.py is not set")
         if not c.work:
             out.append("no project folder set")
         if not c.client_data or not os.path.isdir(c.client_data):
@@ -323,19 +349,21 @@ class Kit:
             return None
         return rec
 
-    def selected_matches(self, basket: list[dict]) -> bool:
+    def selected_matches(self, basket: list[dict], args: list[str] | None = None) -> bool:
+        """Whether the kit's selection was made from these ``args`` (the basket's own by default; an
+        entry with pieces left out is selected as its other looks - the workbench works those out)."""
         rec = self.selected()
         return bool(rec and self.ledger().get("select", {}).get("ok")) and \
-            _arg_pairs(basket_args(rec["basket"])) == _arg_pairs(basket_args(basket))
+            _arg_pairs(rec.get("args") or basket_args(rec["basket"])) == _arg_pairs(args or basket_args(basket))
 
-    def status(self, basket: list[dict] | None = None) -> dict:
+    def status(self, basket: list[dict] | None = None, args: list[str] | None = None) -> dict:
         prj = self.project()
         led = self.ledger()
         steps = [{"step": s, "words": STEP_WORDS[s], "ok": led.get(s, {}).get("ok"), "at": led.get(s, {}).get("at", "")}
                  for s in ORDER]
         job = asdict(self.job) if self.job else None
         last = self.last_install()
-        built = basket is not None and self.selected_matches(basket) and all(led.get(s, {}).get("ok") for s in STEPS)
+        built = basket is not None and self.selected_matches(basket, args) and all(led.get(s, {}).get("ok") for s in STEPS)
         packed = led.get("pack", {}).get("at", "").replace("-", "").replace(":", "").replace(" ", "-")
         return {"settings": asdict(self.cfg), "problems": self.problems(), "project": prj,
                 "retail_build": self.retail_build(), "local": self.local_ok(), "patch_name": self.patch_name(),
@@ -347,7 +375,7 @@ class Kit:
 
     def set_settings(self, values: dict) -> None:
         for k, v in values.items():
-            if k in KitSettings.__dataclass_fields__:
+            if k in KitSettings.__dataclass_fields__ and k not in OWN_COPIES:
                 setattr(self.cfg, k, bool(v) if isinstance(getattr(self.cfg, k), bool) else str(v or "").strip())
         self._save(asdict(self.cfg))
 
@@ -451,10 +479,10 @@ class Kit:
 
     # -- jobs -------------------------------------------------------------------
     def get_tools(self) -> bool:
-        """The kit and Equip Plus, downloaded from their GitHub where the settings point at the
-        workbench's own copies and those aren't here yet."""
+        """The kit and Equip Plus's tools, downloaded from their GitHub when they aren't here yet (or
+        are another commit than the pinned one)."""
         for name in ("kit", "equip-plus"):
-            if self.fetched(name) and not deps.have(self.data_dir, name):
+            if not deps.have(self.data_dir, name):
                 if self.job:
                     self.job.step = "tools"
                 try:
@@ -478,8 +506,8 @@ class Kit:
             args += ["--build", self.retail_build()]
         return self._run(args, local=False) == 0
 
-    def select(self, basket: list[dict]) -> bool:
-        args = basket_args(basket)
+    def select(self, basket: list[dict], args: list[str] | None = None) -> bool:
+        args = args or basket_args(basket)
         if not args:
             self.say("!! the basket is empty")
             return False
@@ -490,16 +518,16 @@ class Kit:
             sel = _load_json(os.path.join(self.cfg.work, "selection.json"), {}) or {}
             path = os.path.join(self.cfg.work, "workbench-basket.json")
             known = set(map(str, (_load_json(path, {}) or {}).get("known") or [])) | set(map(str, sel.get("displays") or {}))
-            _save_json(path, {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "basket": basket,
+            _save_json(path, {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "basket": basket, "args": args,
                               "selection_mtime": _mtime(os.path.join(self.cfg.work, "selection.json")),
                               "known": sorted(known, key=int)})
         return ok
 
-    def go(self, basket: list[dict], looks: set[str] | None = None) -> bool:
+    def go(self, basket: list[dict], looks: set[str] | None = None, args: list[str] | None = None) -> bool:
         """The basket into the client and the server in one go: a project if there's none, the kit's
         selection when the basket changed (which un-ticks every step after it), every step that hasn't
         passed, then the install."""
-        if not basket_args(basket):
+        if not (args or basket_args(basket)):
             self.say("!! the basket is empty")
             return False
         if wow_running():
@@ -517,9 +545,9 @@ class Kit:
             self.job.step = "create"
             if not self.create():
                 return False
-        if self.selected_matches(basket):
+        if self.selected_matches(basket, args):
             self.say("The kit's selection is this basket already.")
-        elif not self.select(basket):
+        elif not self.select(basket, args):
             return False
         if not self.build(then="install"):
             return False
@@ -563,13 +591,58 @@ class Kit:
                 return False
             if self.ledger().get(step, {}).get("ok") and step not in again:
                 continue
-            extra = ["--extension"] if step == "build" else []
-            if self._run([step, "--work", self.cfg.work, *extra], step=step) != 0 or \
-                    not self.ledger().get(step, {}).get("ok"):
+            if not self.step(step) and not (step == "newtech" and self.learn() and self.step(step)):
                 self.say(f"!! {step} did not pass - its log: {os.path.join(self.cfg.work, 'logs', step + '.log')}")
+                return False
+            if step == "tables" and self.hooks.get("tables") and not self.hooks["tables"](self):
                 return False
         self.say("Built." if then else "Built. Look at every preview picture before installing.")
         return True
+
+    def audit_notes(self) -> dict:
+        """The kit's last audit, for the Backport page: helms that sit a little off (warnings) and -
+        when it stopped the install - what failed; each with the piece (display) it's about."""
+        work = self.cfg.work
+        rep = _load_json(os.path.join(work, "reports", "audit.json"), None) if work else None
+        if not isinstance(rep, dict):
+            return {"warnings": [], "fails": []}
+        plan = _load_json(os.path.join(work, "build", "plan.json"), {}) or {}
+
+        def grouped(lines, gate_of=lambda m: "") -> list[dict]:
+            out: dict[str, dict] = {}
+            for gate, m in lines:
+                d = display_of(m, plan)
+                items = (plan.get(d) or {}).get("items") or [{}]
+                g = out.setdefault(d, {"display": d, "name": items[0].get("name") or (f"Look {d}" if d else "Other files"),
+                                       "lines": [], "bodies": [], "gates": []})
+                if m not in g["lines"] and len(g["lines"]) < 8:
+                    g["lines"].append(m)
+                body = body_of(m)
+                if body and body not in g["bodies"]:
+                    g["bodies"].append(body)
+                if gate and gate not in g["gates"]:
+                    g["gates"].append(gate)
+            return list(out.values())
+        warnings = grouped(("", m) for m in (rep.get("notes") or {}).get(PLACEMENT_WARNING, []))
+        passed = bool(self.ledger().get("audit", {}).get("ok"))
+        fails = [] if passed else grouped((g, m) for g, ms in (rep.get("fails") or {}).items() for m in ms)
+        return {"warnings": warnings, "fails": fails}
+
+    def step(self, step: str) -> bool:
+        """One of the kit's steps, passed (its ledger says so)."""
+        extra = ["--extension"] if step == "build" else []
+        return self._run([step, "--work", self.cfg.work, *extra], step=step) == 0 and \
+            bool(self.ledger().get(step, {}).get("ok"))
+
+    def learn(self) -> bool:
+        """newtech stopped: retail uses something the kit hasn't seen (or it has nothing learned for
+        this build yet). The kit learns what the project's retail files use - its own ``newtech
+        --learn`` - and the check runs again; the audit still checks every file the build makes."""
+        new = (_load_json(os.path.join(self.cfg.work, "reports", "newtech.json"), {}) or {}).get("new") or {}
+        what = "; ".join(f"{k} {', '.join(map(str, v))}" for k, v in new.items()) if isinstance(new, dict) else ""
+        self.say("Retail uses something the kit hasn't seen before" + (f" ({what})" if what else "") +
+                 ": the kit learns it for this project and goes on - the audit still checks every file it makes")
+        return self._run(["newtech", "--work", self.cfg.work, "--learn"], step="newtech") == 0
 
     def install(self) -> bool:
         c = self.cfg
