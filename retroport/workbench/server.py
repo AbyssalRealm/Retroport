@@ -15,6 +15,7 @@ API (GET unless noted):
   /api/basket                    GET the basket; POST replaces it
   /api/basket/plan               what installing it builds: each entry's looks, overlaps, changes
   /api/basket/leave-out          POST {display, out}: a piece left out of the entries that have it (or put back)
+  /api/kit/open-sheets           POST: the kit's preview pictures folder opened in Explorer
   /api/kit                       the kit project's state; POST /api/kit/run {action: go|build|rerun|undo|stop...}
   /api/settings                  GET the Settings view; POST saves it (a changed source is read again)
   POST /api/pick {folder, title, start}   Windows' folder/file picker on this machine -> {path}
@@ -873,6 +874,12 @@ def make_handler(wb: Workbench):
                     self._json({"ok": True})
                 elif url.path == "/api/basket/leave-out":
                     self._json(wb.leave_out((body or {}).get("display"), bool((body or {}).get("out", True))))
+                elif url.path == "/api/kit/open-sheets":           # the preview pictures' folder in Explorer
+                    folder = wb.kit.sheets_folder()
+                    if not folder:
+                        raise LookupError("no preview pictures yet: Install (or Build only) draws them")
+                    os.startfile(folder)
+                    self._json({"ok": True})
                 elif url.path == "/api/kit/let-go":
                     wb.kit.let_go([str(d) for d in (body or {}).get("looks") or []])
                     self._json({"ok": True})
@@ -954,8 +961,6 @@ def make_handler(wb: Workbench):
                 return self._json(wb.kit_status() | wb.install_notes())
             if path == "/api/kit/log":
                 return self._json(wb.kit.log_since(_int(q.get("since")) or 0))
-            if path.startswith("/kit/sheet/"):
-                return self._kit_sheet(urllib.parse.unquote(path[len("/kit/sheet/"):]))
             cat = wb.catalog(q.get("source", ""))
             page = _int(q.get("page")) or 0
             if path == "/api/items":
@@ -985,12 +990,6 @@ def make_handler(wb: Workbench):
                     raise LookupError("no such set")
                 return self._json(d | {"source": cat.source, "kind": q.get("kind") or "transmog"})
             raise LookupError(f"no route {path}")
-
-        def _kit_sheet(self, name: str) -> None:
-            if name not in wb.kit.sheets():
-                raise LookupError(name)
-            with open(os.path.join(wb.kit.cfg.work, "sheets", name), "rb") as fh:
-                self._send(fh.read(), "image/png")
 
         def _static(self, rel: str) -> None:
             full = os.path.realpath(os.path.join(STATIC, rel))

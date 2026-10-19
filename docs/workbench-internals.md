@@ -139,8 +139,9 @@ install fetches what it doesn't store from Blizzard's CDN, verified and kept in 
   again), runs every step that hasn't passed (scan when needed, with the kit's own patch out of Data
   meanwhile, then fetch ... sheet), then installs; its progress is ticked off step by step, the log
   is folded below, and a step that fails stops it before anything is installed. The folders are in
-  Settings; the kit's own steps - *redo from here*, *Build only* to look at the preview pictures
-  before installing - are folded away. Install / Undo work the Backport
+  Settings; the kit's own steps - *redo from here*, *Build only* - are folded away. The kit's
+  preview pictures (its sheet step) stay in the project's `sheets` folder; the page only opens it
+  (`/api/kit/open-sheets`, Explorer). Install / Undo work the Backport
   Helper's way (backups under
   `<project>\backups\<time>\install.json`, the helper's `last_backup` updated, so either tool undoes
   the other's): Equip Plus's 3D-piece patch, the kit's patches into Data, the client's Cache cleared,

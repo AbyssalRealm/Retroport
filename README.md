@@ -125,7 +125,8 @@ game) next to its *better fit* options. Your client needs Equip Plus 1.3.0 or ne
 - **The kit's audit stopped the install** - the Backport page names each piece it stopped on, with
   *Leave this piece out*: the rest of its set installs, and the Basket page can put it back. A helm
   that only sits a little off on some bodies (often a race your client added) doesn't stop the
-  install: it's listed as a warning - look at its preview picture.
+  install: it's listed as a warning - look at its picture (*preview pictures folder*: the kit draws
+  one of each piece into the project's `sheets` folder).
 - **"Retail uses something the kit hasn't seen before"** - new retail technology: the kit learns it
   for your project and goes on; the audit still checks every file it makes.
 - **Which copy of the app is running?** - the version is next to the name at the top (hover it for

@@ -519,7 +519,9 @@ function renderAudit(a, running) {
         "would be broken in game. Leave them out and Install again - or take them out of the basket.")] : []),
     ...fails.map(g => row(g, "bad", g => g.gates.join(", "))),
     ...(warns.length ? [el("div", {class: "muted"}, `The last build has ${plural(warns.length, "warning")} - Install goes on with ` +
-        "it: a helm sits a little off on some bodies (look at its preview picture; leave it out if it looks wrong)")] : []),
+        "it: a helm sits a little off on some bodies (look at its picture in the ",
+        el("a", {href: "#", onclick: ev => { ev.preventDefault(); openSheets(); }}, "preview pictures folder"),
+        "; leave it out if it looks wrong)")] : []),
     ...warns.map(g => row(g, "warn", g => g.bodies.length ? `on ${g.bodies.join(", ")}` : "")));
   $("#k-audit").hidden = !(fails.length || warns.length);
 }
@@ -777,14 +779,10 @@ function renderKit() {
       x.step === "select" ? el("span") :
         el("button", {class: "redo", disabled: running, onclick: () => kitRun("rerun", x.step)}, "redo from here"));
   }));
-
-  $("#k-sheets-panel").hidden = !st.sheets.length;
-  $("#k-sheets-title").textContent = `Preview pictures of the last build (${st.sheets.length})`;
-  const have = $$("#k-sheets a").map(a => a.dataset.name).join("|");
-  if (have !== st.sheets.join("|"))
-    $("#k-sheets").replaceChildren(...st.sheets.map(n =>
-      el("a", {href: `/kit/sheet/${encodeURIComponent(n)}`, target: "_blank", "data-name": n},
-        el("img", {src: `/kit/sheet/${encodeURIComponent(n)}`, loading: "lazy", alt: n}), el("span", {}, n))));
+  $("#k-open-sheets").hidden = !st.sheets;
+}
+async function openSheets() {
+  try { await post("/api/kit/open-sheets", {}); } catch (e) { toast(e.message); }
 }
 async function kitRun(action, step = "") {
   try {

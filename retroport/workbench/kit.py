@@ -53,7 +53,7 @@ STEP_WORDS = {
     "audit": "Check for crashes, holes, floating parts",
     "prove-gates": "Prove the checks themselves work",
     "pack": "Pack the patch",
-    "sheet": "Draw the preview pictures",
+    "sheet": "Draw the preview pictures (into the project's sheets folder)",
 }
 SERVER_TABLES = ("Item", "ItemDisplayInfo")
 
@@ -233,11 +233,10 @@ class Kit:
                 return rec | {"backup": os.path.join(root, stamp)}
         return None
 
-    def sheets(self) -> list[str]:
-        d = os.path.join(self.cfg.work, "sheets")
-        if not os.path.isdir(d):
-            return []
-        return sorted(f for f in os.listdir(d) if f.lower().endswith(".png"))
+    def sheets_folder(self) -> str:
+        """Where the kit's sheet step draws its preview pictures ("" when it hasn't yet)."""
+        d = os.path.join(self.cfg.work, "sheets") if self.cfg.work else ""
+        return d if d and os.path.isdir(d) else ""
 
     def sql_files(self) -> list[str]:
         """The item SQL to apply: the Stats step's file (the kit's SQL with the stats after it) when
@@ -367,7 +366,7 @@ class Kit:
         packed = led.get("pack", {}).get("at", "").replace("-", "").replace(":", "").replace(" ", "-")
         return {"settings": asdict(self.cfg), "problems": self.problems(), "project": prj,
                 "retail_build": self.retail_build(), "local": self.local_ok(), "patch_name": self.patch_name(),
-                "steps": steps, "job": job, "sheets": self.sheets(), "sql": self.sql_files(),
+                "steps": steps, "job": job, "sheets": self.sheets_folder(), "sql": self.sql_files(),
                 "last_install": last, "next_line": self.first + len(self.lines), "selected": self.selected(),
                 "equip_plus": {"installed": self.equip_plus_installed(), "wanted": self.equip_plus_wanted()},
                 # the basket as it is: built (Install only copies), and in the client already
@@ -596,7 +595,7 @@ class Kit:
                 return False
             if step == "tables" and self.hooks.get("tables") and not self.hooks["tables"](self):
                 return False
-        self.say("Built." if then else "Built. Look at every preview picture before installing.")
+        self.say("Built." if then else f"Built - its preview pictures are in {os.path.join(self.cfg.work, 'sheets')}.")
         return True
 
     def audit_notes(self) -> dict:

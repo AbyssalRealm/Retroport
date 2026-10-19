@@ -225,10 +225,6 @@ details.panel[open] > summary { margin-bottom: 12px; }
 .log-panel[open] > summary { margin: 0; border-bottom: 1px solid var(--line); }
 #k-log { margin: 0; padding: 10px 12px; height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; color: #c9c4b6; }
 .panel + .panel { margin-top: 12px; }
-.sheets { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 640px), 1fr)); gap: 8px; }
-.sheets a { display: block; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #0b0c10; }
-.sheets img { width: 100%; display: block; }
-.sheets span { display: block; font-size: 11px; color: var(--muted); padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .btn[disabled] { opacity: .45; cursor: default; filter: none; }
 
 /* 3D preview */

@@ -161,14 +161,11 @@
     <details class="panel" id="k-advanced">
       <summary>The kit's steps <span class="muted">(advanced)</span></summary>
       <p class="muted small">Install runs these for you. Redo one when you changed something by hand; Build only
-        stops before the install, to look at the preview pictures first.</p>
+        stops before the install. The kit draws a preview picture of each piece into the project's sheets folder.</p>
       <div id="k-steps" class="steps"></div>
-      <div class="actions"><button class="btn ghost" id="k-build">Build only</button></div>
+      <div class="actions"><button class="btn ghost" id="k-build">Build only</button>
+        <button class="btn ghost" id="k-open-sheets" hidden onclick="openSheets()">Open the preview pictures folder</button></div>
     </details>
-    <div class="panel" id="k-sheets-panel" hidden>
-      <h3 id="k-sheets-title">Preview pictures</h3>
-      <div id="k-sheets" class="sheets"></div>
-    </div>
   </section>
 </main>
 
