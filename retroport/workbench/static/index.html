@@ -11,10 +11,6 @@
 <header class="top">
   <div class="brand">Retroport <span>Workbench</span> <small class="muted" id="app-version"></small></div>
   <div class="sources" id="sources" role="tablist" aria-label="Data source"></div>
-  <label class="search">
-    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4.5 4.5"/></svg>
-    <input id="q" type="search" placeholder="Search items and sets by name or id   ( / )" autocomplete="off" spellcheck="false">
-  </label>
   <div class="pill" id="state" title="Loading status">starting…</div>
 </header>
 
@@ -33,8 +29,12 @@
     and open the workbench again to use the new version.</div>
   <section class="view" id="view-items">
     <div class="filters" id="item-filters">
+      <label class="search">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4.5 4.5"/></svg>
+        <input id="q" type="search" placeholder="Search items by name or id   ( / )" autocomplete="off" spellcheck="false">
+      </label>
       <select id="f-slot" aria-label="Slot"><option value="">Any slot</option></select>
-      <select id="f-armour" aria-label="Armour type"><option value="">Any armour</option></select>
+      <select id="f-armour" aria-label="Armor type"><option value="">Any armor</option></select>
       <select id="f-weapon" aria-label="Weapon type"><option value="">Any weapon</option></select>
       <select id="f-expansion" aria-label="Expansion"><option value="">Any expansion</option></select>
       <select id="f-quality" aria-label="Lowest quality"><option value="">Any quality</option></select>
@@ -58,7 +58,7 @@
       </div>
       <select id="s-expansion" aria-label="Expansion"><option value="">Any expansion</option></select>
       <select id="s-cls" aria-label="Class"><option value="">Any class</option></select>
-      <select id="s-armour" aria-label="Armour type"><option value="">Any armour</option></select>
+      <select id="s-armour" aria-label="Armor type"><option value="">Any armor</option></select>
     </div>
     <div class="summary" id="set-summary"></div>
     <div class="grid sets" id="set-grid"></div>
@@ -73,12 +73,13 @@
       </div>
       <div class="head-actions">
         <button class="btn ghost" id="basket-clear">Empty the basket</button>
-        <button class="btn" id="basket-go">Install these →</button>
+        <button class="btn ghost" id="basket-history-btn" aria-expanded="false">History</button>
       </div>
     </div>
+    <div class="panel basket-history" id="basket-history" hidden></div>
     <div id="basket-foreign"></div>
-    <div id="basket-changes"></div>
     <div id="basket-list"></div>
+    <div id="basket-game"></div>
   </section>
 
   <section class="view" id="view-stats" hidden>
@@ -89,15 +90,13 @@
           ones here: set what all pieces share, fill in the stats, then adjust any piece - the tooltip shows it as
           it will look in game. Numbers follow WotLK's own items.</p>
       </div>
-      <div class="head-actions">
-        <button class="btn" id="stats-go">Install these →</button>
-      </div>
     </div>
     <div class="panel bulk" id="stats-bulk"></div>
     <div class="stats-grid">
       <div class="panel stats-list" id="stats-list"></div>
       <div class="panel stats-editor" id="stats-editor"></div>
-      <div class="stats-side"><div class="tooltip" id="stats-tooltip"></div><div class="muted small" id="stats-entry"></div></div>
+      <div class="stats-side"><div class="tooltip" id="stats-tooltip"></div><div class="muted small" id="stats-entry"></div>
+        <div class="stats-preview" id="stats-preview"></div></div>
     </div>
     <div class="panel stats-sets">
       <div class="sets-head"><h3>Item sets</h3>

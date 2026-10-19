@@ -176,7 +176,7 @@ def updates(edits: dict, ids: dict, kit: dict[int, dict], set_ids: dict) -> list
         if name and name != row.get("name"):
             set_["name"] = _q(name)
         for col, field in (("Quality", "quality"), ("ItemLevel", "ilvl"), ("RequiredLevel", "req"), ("bonding", "bonding")):
-            v = effective(edits, display, field)
+            v = (edits.get("global") or {}).get(field)              # for every piece only (the page sets no other)
             if v not in (None, ""):
                 set_[col] = int(v)
         classes = effective(edits, display, "classes")
@@ -228,7 +228,7 @@ def write_sql(work: str, edits: dict, set_ids: dict) -> str | None:
     lines = updates(edits, ids, kit_items(text), set_ids)
     path = os.path.join(work, "out", "sql", "retroport-items.sql")
     with open(path + ".part", "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(text.rstrip() + "\n\n-- Retroport Workbench, the Stats step: levels, stats, armour, damage, sockets, "
+        fh.write(text.rstrip() + "\n\n-- Retroport Workbench, the Stats step: levels, stats, armor, damage, sockets, "
                  f"sets ({len(lines)} items)\n" + "\n".join(lines) + "\n")
     os.replace(path + ".part", path)
     return path

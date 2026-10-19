@@ -15,6 +15,7 @@ API (GET unless noted):
   /api/basket                    GET the basket; POST replaces it
   /api/basket/plan               what installing it builds: each entry's looks, overlaps, changes
   /api/basket/leave-out          POST {display, out}: a piece left out of the entries that have it (or put back)
+  /api/basket/take-out           POST {key, out}: something in the game taken out by the next install (or kept)
   /api/kit/open-sheets           POST: the kit's preview pictures folder opened in Explorer
   /api/kit                       the kit project's state; POST /api/kit/run {action: go|build|rerun|undo|stop...}
   /api/settings                  GET the Settings view; POST saves it (a changed source is read again)
@@ -306,9 +307,11 @@ class Workbench:
                 "tables": WK.tables(self.reference()), "bonuses": opts["bonuses"], "socket_bonuses": opts["socket_bonuses"]}
 
     def stats_pieces(self) -> dict:
-        """The basket's pieces - one per look, as the kit makes one item per look - with what the
-        catalog knows of each (slot, class and subclass, quality) and its in-game entry once built."""
-        plan = self.basket_plan()
+        """The pieces of what's in the game and of the basket - one per look, as the kit makes one item
+        per look - with what the catalog knows of each (slot, class and subclass, quality), its in-game
+        entry once built, and whether it's in the game already."""
+        plan = self.install_plan()
+        basket_keys = {C.entry_key(e) for e in self.basket()}
         ids = K._load_json(os.path.join(self.kit.cfg.work, "ids.json"), {}) if self.kit.cfg.work else {}
         entries = {str(k): v for k, v in ((ids or {}).get("item") or {}).items()}
         pieces, seen = [], {}
@@ -326,7 +329,8 @@ class Workbench:
                      "label": look.get("label") or "", "icon": look.get("icon") or 0, "quality": look.get("quality"),
                      "inv": look.get("slot") or 0, "cls": row[C.F["cls"]] if row is not None else 0,
                      "sub": row[C.F["sub"]] if row is not None else 0, "source": e.get("source"),
-                     "groups": [e["name"]], "group_key": e["key"], "entry": entries.get(d)}
+                     "groups": [e["name"]], "group_key": e["key"], "entry": entries.get(d),
+                     "in_game": e["key"] not in basket_keys}
                 seen[d] = p
                 pieces.append(p)
         return {"pieces": pieces, "edits": IS.load(self.settings.data_dir),
@@ -346,7 +350,7 @@ class Workbench:
             edits = IS.load(dd)
             sids = IS.set_ids(dd, edits["sets"])
             if IS.apply_item_dbc(work, edits) and pack_again:
-                kit.say("Stats: armour types set in the item table - packing it again")
+                kit.say("Stats: armor types set in the item table - packing it again")
                 if kit._run(["pack", "--work", work], step="pack") != 0 or not kit.ledger().get("pack", {}).get("ok"):
                     kit.say("!! the kit could not pack the changed item table")
                     return False
@@ -419,10 +423,60 @@ class Workbench:
             return {"stats": {"pieces": 0, "without": 0, "names": [], "error": str(e)}, "foreign": 0,
                     "audit": {"warnings": [], "fails": []}}
 
+    # -- what's in the game, what Install builds, what was installed before ------------------------
+    # An install adds the basket to what earlier installs put in the game (the project's last install
+    # record) - minus what's taken out - and the basket empties: what it held is in the game now.
+    def in_game(self) -> list:
+        """The entries the last install put in the game."""
+        return list((self.kit.last_install() or {}).get("basket") or [])
+
+    def _take_out_path(self) -> str:
+        return os.path.join(self.kit.cfg.work, "workbench-take-out.json") if self.kit.cfg.work else ""
+
+    def take_out(self) -> list[str]:
+        """The keys of entries in the game the next install takes out."""
+        got = K._load_json(self._take_out_path(), []) if self._take_out_path() else []
+        return [str(k) for k in got] if isinstance(got, list) else []
+
+    def set_take_out(self, key: str, out: bool) -> None:
+        if key not in {C.entry_key(e) for e in self.in_game()}:
+            raise LookupError("that isn't in the game")
+        keys = set(self.take_out())
+        keys = keys | {key} if out else keys - {key}
+        K._save_json(self._take_out_path(), sorted(keys))
+
+    def install_list(self) -> list:
+        """What Install builds: what's in the game (but what's taken out), then the basket - a basket
+        entry stands for the game's entry of the same key (its pieces left out, say)."""
+        basket = self.basket()
+        skip = {C.entry_key(e) for e in basket} | set(self.take_out())
+        return [e for e in self.in_game() if C.entry_key(e) not in skip] + basket
+
+    def install_plan(self) -> dict:
+        return C.plan_basket(self.catalogs, self.install_list())
+
+    def history(self) -> list:
+        got = K._load_json(os.path.join(self.settings.data_dir, "basket-history.json"), [])
+        return got if isinstance(got, list) else []
+
+    def after_install(self, ok: bool, basket: list, taken_out: list) -> None:
+        """An install ended: it goes in the history (the last five), and when it worked what it
+        installed leaves the basket (it's in the game now) and the take-outs are done."""
+        job = self.kit.job
+        state = "installed" if ok else (job.state if job and job.state == "stopped" else "failed")
+        rec = {"time": time.strftime("%Y%m%d-%H%M%S"), "result": state, "step": "" if ok else (job.step if job else ""),
+               "basket": basket, "taken_out": taken_out}
+        K._save_json(os.path.join(self.settings.data_dir, "basket-history.json"), [rec, *self.history()][:5])
+        if ok:
+            done = {C.entry_key(e): e for e in basket}
+            self.save_basket([e for e in self.basket() if done.get(C.entry_key(e)) != e])
+            if self._take_out_path() and os.path.isfile(self._take_out_path()):
+                os.remove(self._take_out_path())
+
     def kit_basket(self, plan: dict) -> list:
-        """The basket as the kit selects it: an entry with pieces left out is its other looks."""
+        """What Install builds as the kit selects it: an entry with pieces left out is its other looks."""
         out = []
-        for e, p in zip(self.basket(), plan["entries"]):
+        for e, p in zip(self.install_list(), plan["entries"]):
             if not e.get("leave_out"):
                 out.append(e)
                 continue
@@ -433,20 +487,30 @@ class Workbench:
         return out
 
     def kit_args(self, plan: dict | None = None) -> list[str]:
-        """The kit's select arguments for the basket (pieces left out taken out)."""
-        return K.basket_args(self.kit_basket(plan or self.basket_plan()))
+        """The kit's select arguments for what Install builds (pieces left out taken out)."""
+        return K.basket_args(self.kit_basket(plan or self.install_plan()))
 
     def kit_status(self) -> dict:
+        items = self.install_list()
         try:
             args = self.kit_args()
-        except RuntimeError:                              # a catalog still loading: the basket's own
+        except RuntimeError:                              # a catalog still loading: the entries' own
             args = None
-        return self.kit.status(self.basket(), args)
+        game = {C.entry_key(e) for e in self.in_game()}
+        basket = self.basket()
+        return self.kit.status(items, args) | {"plan": {
+            "basket": len(basket), "adds": sum(1 for e in basket if C.entry_key(e) not in game),
+            "in_game": len(game), "take_out": len(set(self.take_out()) & game), "builds": len(items)}}
 
     def leave_out(self, display, out: bool) -> dict:
         """A piece (retail display) left out of every basket entry that has it - or put back."""
         d = str(int(display))
-        basket, plan, hit = self.basket(), self.basket_plan(), 0
+        basket, hit = self.basket(), 0
+        keys = {C.entry_key(e) for e in basket}
+        for e in self.in_game():                       # a piece of something in the game: its entry in the
+            if C.entry_key(e) not in keys:             # basket stands for it from now on
+                basket.append(json.loads(json.dumps(e)))
+        plan = C.plan_basket(self.catalogs, basket)
         for e, p in zip(basket, plan["entries"]):
             if d not in {str(l.get("display")) for l in p["looks"] + p.get("left_out", [])}:
                 continue
@@ -459,12 +523,15 @@ class Workbench:
             hit += 1
         if not hit:
             raise LookupError(f"no basket entry has look {d}")
-        self.save_basket(basket)
+        touched = [e for e, p in zip(basket, plan["entries"])
+                   if C.entry_key(e) in keys or d in {str(l.get("display")) for l in p["looks"] + p.get("left_out", [])}]
+        self.save_basket(touched)
         return self.basket_plan()
 
     def foreign_looks(self) -> list[dict]:
-        """Looks the kit's project built outside the workbench and the basket lacks (see Kit)."""
-        plan = self.basket_plan()
+        """Looks the kit's project built outside the workbench and neither the game nor the basket
+        has (see Kit)."""
+        plan = self.install_plan()
         looks = {str(l["display"]) for e in plan["entries"] for l in e["looks"] if l.get("display")}
         out = []
         cat = self.catalogs.get("retail") or next(iter(self.catalogs.values()), None)
@@ -685,11 +752,21 @@ class Workbench:
         if action == "stop":
             return k.stop()
         if action == "go":
-            plan = self.basket_plan()
+            plan = self.install_plan()
             looks = {str(l["display"]) for e in plan["entries"] for l in e["looks"] if l.get("display")}
-            k.start("go", k.go, self.basket(), looks, self.kit_args(plan))
+            items, args, basket = self.install_list(), self.kit_args(plan), self.basket()
+            out = [e for e in self.in_game() if C.entry_key(e) in set(self.take_out())]
+
+            def go() -> bool:
+                ok = False
+                try:
+                    ok = k.go(items, looks, args)
+                    return ok
+                finally:
+                    self.after_install(ok, basket, out)
+            k.start("go", go)
             return
-        jobs = {"create": (k.create,), "select": (k.select, self.basket(), self.kit_args()),
+        jobs = {"create": (k.create,), "select": (k.select, self.install_list(), self.kit_args()),
                 "scan": (k.scan,), "build": (k.build,), "rerun": (k.build, step), "install": (k.install,),
                 "undo": (k.undo,)}
         if action not in jobs:
@@ -787,10 +864,20 @@ class Workbench:
         self.start()
 
     def basket_plan(self) -> dict:
-        """The basket as the next install builds it, against what the last one put in."""
+        """The basket's entries and their looks; what's in the game (each marked when the next install
+        takes it out); the install history."""
         last = self.kit.last_install()
-        plan = C.plan_basket(self.catalogs, self.basket(), last.get("basket") if last else None)
+        plan = C.plan_basket(self.catalogs, self.basket())
+        game = C.plan_basket(self.catalogs, self.in_game())["entries"]
+        out = set(self.take_out())
+        keys = {e["key"] for e in plan["entries"]}
+        for e in game:
+            e["take_out"] = e["key"] in out
+        for e in plan["entries"]:
+            e["in_game"] = any(g["key"] == e["key"] for g in game)
+        plan["in_game"] = [e for e in game if e["key"] not in keys or e["take_out"]]
         plan["installed_at"] = last["time"] if last else ""
+        plan["history"] = self.history()
         return plan
 
     def basket(self) -> list:
@@ -872,6 +959,9 @@ def make_handler(wb: Workbench):
                 elif url.path == "/api/stats":
                     IS.save(wb.settings.data_dir, body or {})
                     self._json({"ok": True})
+                elif url.path == "/api/basket/take-out":
+                    wb.set_take_out(str((body or {}).get("key") or ""), bool((body or {}).get("out", True)))
+                    self._json(wb.basket_plan())
                 elif url.path == "/api/basket/leave-out":
                     self._json(wb.leave_out((body or {}).get("display"), bool((body or {}).get("out", True))))
                 elif url.path == "/api/kit/open-sheets":           # the preview pictures' folder in Explorer

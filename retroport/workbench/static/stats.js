@@ -1,10 +1,12 @@
 "use strict";
 // The Stats step, between the basket and Install. The backport kit makes every piece a level-1
-// cosmetic copy; here each gets real stats. Values set "for every piece" apply unless a piece sets
-// its own. Stats are filled in by WotLK's own rules (wotlk.py's tables: the stat budget by item
-// level and slot, real items' armour and durability, the weapon damage tables), split the way real
-// WotLK items of the role split them - or copied from a WotLK item - and the tooltip shows the
-// piece as the 3.3.5 client will. Everything is saved as it changes (item-stats.json).
+// cosmetic copy; here each gets real stats. Item level, required level, quality and binding are set
+// for every piece; armor type and the role the stats are for too, unless a piece sets its own;
+// classes per piece. Stats are filled in by WotLK's own rules (wotlk.py's tables: the stat budget by
+// item level and slot, real items' armor and durability, the weapon damage tables), split the way
+// real WotLK items of the role split them - or copied from a WotLK item - and the tooltip shows the
+// piece as the 3.3.5 client will, its model in 3D under it. Everything is saved as it changes
+// (item-stats.json).
 
 (() => {   // its own scope: nothing here may replace a name of app.js's
 
@@ -18,7 +20,7 @@ const INV_NAMES = {1: "Head", 2: "Neck", 3: "Shoulder", 4: "Shirt", 5: "Chest", 
 const WEAPON_NAMES = {0: "Axe", 1: "Axe", 2: "Bow", 3: "Gun", 4: "Mace", 5: "Mace", 6: "Polearm", 7: "Sword", 8: "Sword",
                       10: "Staff", 13: "Fist Weapon", 14: "Miscellaneous", 15: "Dagger", 16: "Thrown", 18: "Crossbow",
                       19: "Wand", 20: "Fishing Pole"};
-const ARMOUR_NAMES = {0: "Miscellaneous", 1: "Cloth", 2: "Leather", 3: "Mail", 4: "Plate", 6: "Shield"};
+const ARMOR_NAMES = {0: "Miscellaneous", 1: "Cloth", 2: "Leather", 3: "Mail", 4: "Plate", 6: "Shield"};
 const CLASS_COLORS = {1: "#C79C6E", 2: "#F58CBA", 3: "#ABD473", 4: "#FFF569", 5: "#FFFFFF", 6: "#C41F3B", 7: "#0070DE",
                       8: "#69CCF0", 9: "#9482C9", 11: "#FF7D0A"};
 const SOCKET_COLORS = {1: "#c0c0c0", 2: "#d62828", 4: "#e8c331", 8: "#3a7bd5", 14: "#b9b9b9"};
@@ -59,6 +61,7 @@ async function loadStats() {
     SG.pieces = got.pieces;
     SG.basketSets = got.basket_sets;
     SG.edits = {global: got.edits.global || {}, pieces: got.edits.pieces || {}, sets: got.edits.sets || []};
+    if (tidy(SG.edits)) saveStats();
     if (!SG.pieces.some(p => p.display === SG.sel)) SG.sel = SG.pieces.length ? SG.pieces[0].display : null;
     renderStats();
   } catch (e) {
@@ -72,6 +75,21 @@ function saveStats() {
     updateStatsBadge();
   }, 400);
 }
+// Saved by an earlier version: classes for every piece (now each piece's own - the pieces that had
+// none of their own get it), and a piece's own item level, required level, quality and binding (now
+// set for every piece only). True when anything changed.
+function tidy(edits) {
+  let changed = false;
+  const g = edits.global;
+  if (isSet(g.classes)) {
+    for (const p of SG.pieces) { const e = own(p.display); if (!isSet(e.classes)) e.classes = g.classes; }
+    delete g.classes; changed = true;
+  }
+  for (const e of Object.values(edits.pieces))
+    for (const f of GLOBAL_ONLY) if (f in e) { delete e[f]; changed = true; }
+  return changed;
+}
+const GLOBAL_ONLY = ["ilvl", "req", "quality", "bonding"];
 const piece = d => SG.pieces.find(p => p.display === d);
 const own = d => SG.edits.pieces[d] || (SG.edits.pieces[d] = {});
 const isSet = v => v !== undefined && v !== null && v !== "";
@@ -90,14 +108,14 @@ function updateStatsBadge() {
 }
 
 // -- what a piece is ---------------------------------------------------------------------------
-const isArmourPiece = p => p.cls === 4 && [1, 2, 3, 4].includes(p.sub) && p.inv !== 16;
-const subOf = p => isArmourPiece(p) ? +eff(p, "armor_type", p.sub) : p.sub;
+const isArmorPiece = p => p.cls === 4 && [1, 2, 3, 4].includes(p.sub) && p.inv !== 16;
+const subOf = p => isArmorPiece(p) ? +eff(p, "armor_type", p.sub) : p.sub;
 const qualityOf = p => +eff(p, "quality", p.quality ?? 4);
 const isWeapon = p => p.cls === 2;
 function typeName(p) {
   if (isWeapon(p)) return WEAPON_NAMES[p.sub] || "Weapon";
   if (p.inv === 16 || p.inv === 23) return "";
-  return ARMOUR_NAMES[subOf(p)] || "";
+  return ARMOR_NAMES[subOf(p)] || "";
 }
 const CLASS_PROFILE = {1: "str", 2: "str", 3: "hunter", 4: "agi", 5: "caster", 6: "str", 7: "caster", 8: "caster", 9: "caster", 11: "agi"};
 function defaultProfile(p, depth = 0) {
@@ -110,8 +128,8 @@ function defaultProfile(p, depth = 0) {
   if (p.cls === 4) {
     if (sub === 6) return "tank";
     if (p.inv === 23) return "caster";
-    if (p.inv === 16 && !depth) {                       // a cloak: the role of the armour it comes with
-      const mates = SG.pieces.filter(o => o !== p && o.groups[0] === p.groups[0] && isArmourPiece(o));
+    if (p.inv === 16 && !depth) {                       // a cloak: the role of the armor it comes with
+      const mates = SG.pieces.filter(o => o !== p && o.groups[0] === p.groups[0] && isArmorPiece(o));
       const votes = {};
       for (const o of mates) { const r = defaultProfile(o, 1); votes[r] = (votes[r] || 0) + 1; }
       return Object.entries(votes).sort((a, b) => b[1] - a[1])[0]?.[0] || "str";
@@ -209,6 +227,7 @@ const manual = d => { own(d).stats_mode = "manual"; };
 // -- the page ----------------------------------------------------------------------------------
 function renderStats() {
   keepFocus(() => { renderBulk(); renderList(); renderEditor(); renderTooltip(); renderSets(); updateStatsBadge(); });
+  renderPreview();
 }
 // A redraw replaces the fields: the one being typed in gets the focus and its cursor back (found by its
 // place among its panel's fields - typing never changes what comes before it), so 277 is typed in one go.
@@ -247,32 +266,30 @@ function num(attrs, value, onchange) {
   });
   return i;
 }
-const classOptions = () => Object.entries(SG.opts.classes).map(([id, name]) => [1 << (id - 1), name]);
 function renderBulk() {
   const g = SG.edits.global, set = (f, v) => { g[f] = v; refreshAuto(); saveStats(); renderStats(); };
   const field = (label, control, hint) => el("label", {class: "bfield", title: hint || ""}, el("span", {}, label), control);
   $("#stats-bulk").replaceChildren(
-    el("h3", {}, "For every piece ", el("span", {class: "muted"}, "- a piece can still set its own")),
+    el("h3", {}, "For every piece ", el("span", {class: "muted"}, "- armor type and stats a piece can still set for itself")),
     el("div", {class: "bulk-row"},
-      field("Armour type", sel({}, [["", "Each piece's own"], ...Object.entries(SG.opts.armour_types)], g.armor_type, v => set("armor_type", v ? +v : "")),
-            "Cloth, leather, mail or plate for every armour piece (not cloaks or shields)"),
-      field("Item level", num({placeholder: "each piece", max: 300}, g.ilvl, v => set("ilvl", v)),
-            "Left empty, each piece needs its own"),
+      field("Armor type", sel({}, [["", "Each piece's own"], ...Object.entries(SG.opts.armour_types)], g.armor_type, v => set("armor_type", v ? +v : "")),
+            "Cloth, leather, mail or plate for every armor piece (not cloaks or shields)"),
+      field("Item level", num({placeholder: "not set", max: 300}, g.ilvl, v => set("ilvl", v)),
+            "What WotLK's numbers are filled in for"),
       field("Required level", num({placeholder: "none", max: 80}, g.req, v => set("req", v))),
       field("Quality", sel({}, [["", "Each piece's own"], ...Object.entries(SG.opts.qualities).filter(([q]) => q <= 5)], g.quality,
                            v => set("quality", v === "" ? "" : +v))),
-      field("Classes", sel({}, [["", "All classes"], ...classOptions()], g.classes, v => set("classes", v === "" ? "" : +v)),
-            "One class for every piece; a piece can allow more"),
-      field("Binding", sel({}, [["", "Each piece's own"], ...Object.entries(SG.opts.bonding)], g.bonding, v => set("bonding", v === "" ? "" : +v))),
+      field("Binding", sel({}, [["", "No binding"], ...Object.entries(SG.opts.bonding).filter(([b]) => +b)], g.bonding,
+                           v => set("bonding", v === "" ? "" : +v))),
       field("Stats for", sel({}, [["", "Each piece's type"], ...Object.entries(PROFILES).map(([k, x]) => [k, x.label])], g.profile,
                              v => set("profile", v)), "The role the stats are chosen for")),
     el("div", {class: "bulk-actions"},
       el("button", {class: "btn", onclick: () => {
         const done = SG.pieces.filter((p, k) => fillPiece(p, k)).length, left = SG.pieces.length - done;
         saveStats(); renderStats();
-        toast(left ? `Filled in ${done}; ${left} need an item level first` : `Filled in the stats of ${done} piece${done === 1 ? "" : "s"}`);
+        toast(left ? "Set the item level first" : `Filled in the stats of ${done} piece${done === 1 ? "" : "s"}`);
       }}, "Fill in stats for every piece"),
-      el("span", {class: "muted small"}, "WotLK's budget for the item level, quality and slot, split the way real WotLK items of that role split it; armour, damage and durability as real items have them.")));
+      el("span", {class: "muted small"}, "WotLK's budget for the item level, quality and slot, split the way real WotLK items of that role split it; armor, damage and durability as real items have them.")));
 }
 function renderList() {
   if (!SG.pieces.length) {
@@ -286,7 +303,8 @@ function renderList() {
     groups.get(g).push(p);
   }
   $("#stats-list").replaceChildren(...[...groups.entries()].map(([g, ps]) => el("div", {class: "sgroup"},
-    el("h4", {}, g), ps.map(p => {
+    el("h4", {}, g, ps[0].in_game ? el("span", {class: "badge dim", title: "Installed already: Install again to give the game " +
+                                             "what you change here"}, "in your game") : null), ps.map(p => {
       const lvl = +eff(p, "ilvl", 0);
       return el("div", {class: "srow-p" + (p.display === SG.sel ? " on" : ""), onclick: () => { SG.sel = p.display; renderStats(); }},
         icon(p.icon, qualityOf(p), "sm", p.source),
@@ -302,18 +320,12 @@ function renderEditor() {
   if (!p) { box.replaceChildren(el("div", {class: "muted"}, "Pick a piece.")); return; }
   const e = own(p.display), g = SG.edits.global;
   const ch = (f, v, auto = true) => { e[f] = v; if (auto && e.stats_mode === "auto") fillPiece(p, SG.pieces.indexOf(p)); saveStats(); renderStats(); };
-  const inherit = (f, label) => isSet(g[f]) ? `${label}: ${g[f]}` : label;
   const row = (...kids) => el("div", {class: "erow"}, ...kids);
   const field = (label, control) => el("label", {class: "efield"}, el("span", {}, label), control);
-  const qualOpts = [["", `For every piece (${QUAL_NAME(isSet(g.quality) ? g.quality : p.quality)})`],
-                    ...Object.entries(SG.opts.qualities).filter(([q]) => q <= 5)];
 
-  // classes: every class by itself, or the bulk choice
-  const mask = +eff(p, "classes", -1);
-  const allowed = c => mask === -1 || mask === 0 || (mask & (1 << (c - 1)));
+  // classes: all of them, or the ones picked
   const classChips = el("div", {class: "class-chips"},
-    el("button", {class: "chip" + (!isSet(e.classes) ? " on" : ""), onclick: () => ch("classes", "", false)},
-       isSet(g.classes) ? `For every piece (${SG.opts.classes[Math.log2(g.classes) + 1] || "set"})` : "All classes"),
+    el("button", {class: "chip" + (!isSet(e.classes) || e.classes === -1 ? " on" : ""), onclick: () => ch("classes", "", false)}, "All classes"),
     Object.entries(SG.opts.classes).map(([id, name]) => {
       const bit = 1 << (id - 1), on = isSet(e.classes) && e.classes !== -1 && (e.classes & bit);
       return el("button", {class: "chip cls" + (on ? " on" : ""), style: on ? `color:${CLASS_COLORS[id]};border-color:${CLASS_COLORS[id]}` : "",
@@ -333,15 +345,16 @@ function renderEditor() {
     (e.stats = e.stats || []).push([7, 0]); manual(p.display); saveStats(); renderStats(); }}, "+ Add a stat");
 
   const filled = e.stats_mode === "auto";
-  const statsHead = el("div", {class: "stats-head"},
-    el("span", {class: "muted small"}, filled ? `Filled in for ${PROFILES[profileOf(p)].label}, and kept so as the piece changes` :
-       e.stats_mode === "manual" ? "Your own numbers" : "None yet"),
-    sel({title: "The role its stats are chosen for"}, [["", `${isSet(g.profile) ? "For every piece" : "By its type"} (${PROFILES[profileOf(p)].label})`],
-        ...Object.entries(PROFILES).map(([k, x]) => [k, x.label])], e.profile, v => ch("profile", v)),
+  const statsHead = [el("div", {class: "stats-head"},
+    el("span", {}, "Fill in this piece's stats for"),
+    sel({title: "The role its stats are chosen for"}, Object.entries(PROFILES).map(([k, x]) => [k, x.label]), profileOf(p),
+        v => ch("profile", v)),
     el("button", {class: "btn small-btn", onclick: () => {
-      if (!fillPiece(p, SG.pieces.indexOf(p))) return toast("Give it an item level first");
+      if (!fillPiece(p, SG.pieces.indexOf(p))) return toast("Set the item level first (For every piece, above)");
       saveStats(); renderStats(); }}, filled ? "Fill in again" : "Fill in"),
-    el("button", {class: "btn ghost small-btn", onclick: () => { SG.copyOpen = !SG.copyOpen; renderEditor(); }}, "Copy a WotLK item…"));
+    el("button", {class: "btn ghost small-btn", onclick: () => { SG.copyOpen = !SG.copyOpen; renderEditor(); }}, "Copy a WotLK item…")),
+    el("div", {class: "muted small"}, filled ? `Filled in for ${PROFILES[profileOf(p)].label}, and kept so as the piece changes` :
+       e.stats_mode === "manual" ? "Your own numbers" : "None yet")];
 
   const copyBox = SG.copyOpen ? copyPanel(p) : null;
   const weapon = isWeapon(p) ? row(
@@ -367,19 +380,14 @@ function renderEditor() {
         (() => { const i = el("input", {class: "ename", value: e.name || "", placeholder: p.name, style: `color:${QCOL[qualityOf(p)]}`});
                  i.addEventListener("input", () => { e.name = i.value; saveStats(); renderTooltip(); renderList(); }); return i; })(),
         el("div", {class: "sub muted"}, [INV_NAMES[p.inv], typeName(p), p.groups.join(", ")].filter(Boolean).join(" · ")))),
-    row(field("Quality", sel({}, qualOpts, e.quality, v => ch("quality", v === "" ? "" : +v))),
-        field("Item level", num({placeholder: inherit("ilvl", "not set"), max: 300}, e.ilvl, v => ch("ilvl", v))),
-        field("Required level", num({placeholder: inherit("req", "none"), max: 80}, e.req, v => ch("req", v, false))),
-        isArmourPiece(p) ? field("Armour type", sel({}, [["", `For every piece (${ARMOUR_NAMES[isSet(g.armor_type) ? g.armor_type : p.sub]})`],
-          ...Object.entries(SG.opts.armour_types)], e.armor_type, v => ch("armor_type", v ? +v : ""))) : null),
-    row(field("Binding", sel({}, [["", `For every piece (${SG.opts.bonding[isSet(g.bonding) ? g.bonding : 0]})`], ...Object.entries(SG.opts.bonding)],
-          e.bonding, v => ch("bonding", v === "" ? "" : +v, false))),
+    row(isArmorPiece(p) ? field("Armor type", sel({}, [["", `For every piece (${ARMOR_NAMES[isSet(g.armor_type) ? g.armor_type : p.sub]})`],
+          ...Object.entries(SG.opts.armour_types)], e.armor_type, v => ch("armor_type", v ? +v : ""))) : null,
         el("label", {class: "check"}, (() => { const c = el("input", {type: "checkbox", checked: !!e.unique});
           c.addEventListener("change", () => { e.unique = c.checked; saveStats(); renderTooltip(); }); return c; })(), " Unique")),
     el("div", {class: "esec"}, el("h4", {}, "Classes"), classChips),
-    el("div", {class: "esec"}, el("h4", {}, "Stats"), statsHead, copyBox, el("div", {class: "statrows"}, statsRows), addStat),
-    el("div", {class: "esec"}, el("h4", {}, isWeapon(p) ? "Weapon" : "Armour"),
-      p.cls === 4 ? row(field("Armour", num({max: UINT_MAX}, e.armor, v => { e.armor = v; manual(p.display); saveStats(); renderTooltip(); })),
+    el("div", {class: "esec"}, el("h4", {}, "Stats"), ...statsHead, copyBox, el("div", {class: "statrows"}, statsRows), addStat),
+    el("div", {class: "esec"}, el("h4", {}, isWeapon(p) ? "Weapon" : "Armor"),
+      p.cls === 4 ? row(field("Armor", num({max: UINT_MAX}, e.armor, v => { e.armor = v; manual(p.display); saveStats(); renderTooltip(); })),
                         subOf(p) === 6 ? field("Block", num({max: UINT_MAX}, e.block, v => { e.block = v; saveStats(); renderTooltip(); })) : null) : null,
       weapon),
     el("div", {class: "esec"}, el("h4", {}, "Sockets"), row(...sockets), row(field("Socket bonus", bonusSel))),
@@ -390,22 +398,20 @@ function renderEditor() {
       row(field("Description", (() => { const i = el("input", {value: e.description || "", placeholder: "the yellow line at the bottom"});
         i.addEventListener("input", () => { e.description = i.value; saveStats(); renderTooltip(); }); return i; })()))));
 }
-const QUAL_NAME = q => (SG.opts.qualities || {})[q] || "";
 
 // copy a real WotLK item's numbers onto the piece
 function copyPanel(p) {
   const results = el("div", {class: "copy-results"});
   const show = hits => results.replaceChildren(...(hits.length ? hits.map(r => el("div", {class: "copy-hit", onclick: () => {
     const e = own(p.display);
-    Object.assign(e, {ilvl: r.ilvl, req: r.req || "", quality: r.quality, stats: r.stats.map(x => [...x]),
-      durability: r.durability, sell: r.sell, bonding: r.bonding, sockets: r.sockets.slice(), socket_bonus: r.socket_bonus,
-      stats_mode: "manual", copied_from: r.name});
+    Object.assign(e, {stats: r.stats.map(x => [...x]), durability: r.durability, sell: r.sell, sockets: r.sockets.slice(),
+      socket_bonus: r.socket_bonus, stats_mode: "manual", copied_from: r.name});
     if (p.cls === 4) e.armor = r.cls === 4 && r.sub === subOf(p) ? r.armor : autoNumbers(p).armor;
     if (isWeapon(p) && r.dmg_max) Object.assign(e, {dmg_min: r.dmg_min, dmg_max: r.dmg_max, delay: r.delay});
     SG.copyOpen = false; saveStats(); renderStats(); toast(`Copied ${r.name}`);
   }},
     el("span", {class: "pname", style: `color:${QCOL[r.quality]}`}, r.name),
-    el("span", {class: "muted small"}, ` ${r.ilvl} · ${[INV_NAMES[r.inv], r.cls === 2 ? WEAPON_NAMES[r.sub] : ARMOUR_NAMES[r.sub]].filter(Boolean).join(" ")} · `,
+    el("span", {class: "muted small"}, ` ${r.ilvl} · ${[INV_NAMES[r.inv], r.cls === 2 ? WEAPON_NAMES[r.sub] : ARMOR_NAMES[r.sub]].filter(Boolean).join(" ")} · `,
        r.stats.map(([t, v]) => `${v} ${(SG.opts.stats[t] || ["?"])[0]}`).join(", ")))) :
     [el("div", {class: "muted small"}, "Nothing matches.")]));
   const q = el("input", {type: "search", placeholder: "Search WotLK items of this slot by name, e.g. Scourgelord", spellcheck: "false"});
@@ -477,6 +483,21 @@ function renderTooltip() {
     p.entry ? `in game: item ${p.entry}` : "", e.copied_from ? `stats from ${e.copied_from}` : ""].filter(Boolean).join(" · ");
 }
 
+// -- the piece in 3D, under its tooltip ---------------------------------------------------------
+// The workbench's one viewer: it comes here from the item panel (and goes back when one opens).
+function renderPreview() {
+  const box = $("#stats-preview"), p = piece(SG.sel);
+  if (!p || typeof previewBox !== "function") { box.replaceChildren(); SG.pb = null; return; }
+  if (!SG.pb || !box.contains(SG.pb.box) || (SG.pb.v && !SG.pb.box.contains(SG.pb.v.canvas))) {
+    SG.pb = previewBox("stats-pv");
+    box.replaceChildren(SG.pb.box);
+    SG.shown = null;
+  }
+  if (!SG.pb.v || SG.shown === p.display) return;
+  SG.shown = p.display;
+  loadDisplay(SG.pb, p.display, p.inv, p.source);
+}
+
 // -- item sets ---------------------------------------------------------------------------------
 function renderSets() {
   const box = $("#stats-sets");
@@ -541,7 +562,6 @@ function bonusPicker(b, done) {
 }
 
 function wireStats() {
-  $("#stats-go").addEventListener("click", () => show("backport"));
   $("#sets-new").addEventListener("click", () => {
     SG.edits.sets.push({key: "s" + Date.now().toString(36), name: "New set", pieces: SG.sel ? [SG.sel] : [], bonuses: []});
     saveStats(); renderStats();

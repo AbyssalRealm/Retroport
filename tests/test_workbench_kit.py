@@ -439,3 +439,44 @@ def test_the_audit_says_which_piece_and_body_a_line_is_about(tmp_path, monkeypat
     fails = kit.audit_notes()["fails"]
     assert [(f["display"], f["name"], f["gates"]) for f in fails] == [("751019", "Some Helm", ["C1/C2 closure"])]
     assert K.display_of("display 710295 (chest): retail 3D", plan) == "710295" and K.display_of("nothing", plan) == ""
+
+
+def test_measuring_waits_for_something_worn_on_the_body(tmp_path):
+    import types
+    weapons = {"displays": {"1": {"slot": "mainhand"}, "2": {"slot": "held"}}}
+    assert not L.wears_on_body(weapons) and L.wears_on_body({"displays": {"1": {"slot": "head"}}})
+    (tmp_path / "selection.json").write_text(json.dumps(weapons))
+    ran, said = [], []
+    measure = types.SimpleNamespace(run=lambda prj, log, only=None: ran.append(only) or 0)
+    bpcore = types.SimpleNamespace(load_json=lambda p, d=None: json.load(open(p)) if os.path.isfile(p) else d)
+    prj = types.SimpleNamespace(path=lambda *parts: os.path.join(str(tmp_path), *parts))
+    L.measure_when_worn(measure, bpcore)
+    assert measure.run(prj, said.append) == 0 and ran == [] and "weapons only" in said[0]
+    (tmp_path / "selection.json").write_text(json.dumps({"displays": {"1": {"slot": "chest"}}}))
+    assert measure.run(prj, said.append) == 0 and ran == [None]
+    assert not L.measured(str(tmp_path))
+    (tmp_path / "client").mkdir()
+    for n in ("helm_shift.json", "geoset_map.json"):
+        (tmp_path / "client" / n).write_text("{}")
+    assert L.measured(str(tmp_path))
+
+
+def test_each_install_ticks_its_own_steps_and_measures_when_armor_comes(tmp_path, monkeypatch):
+    kit, work, data = _project(tmp_path, monkeypatch)
+    (work / "selection.json").write_text(json.dumps({"displays": {"1": {"slot": "chest"}}}))
+    ran = []
+
+    def kit_step(args, step="", local=None, cwd=None):
+        ran.append(args[0])
+        return 0
+    monkeypatch.setattr(kit, "_run", kit_step)
+    kit.job = K.Job("build")
+    assert kit.build()                                         # every step passed before: none runs...
+    assert ran == ["measure"]                                  # ...but measuring, which never measured
+    assert kit.job.done == ["scan", *K.STEPS]
+    (work / "client").mkdir()
+    for n in ("helm_shift.json", "geoset_map.json"):
+        (work / "client" / n).write_text("{}")
+    kit.job = K.Job("build")
+    assert kit.build() and ran == ["measure"] and kit.job.done == ["scan", *K.STEPS]
+    assert kit.status()["measure"] == {"needed": True, "done": True}

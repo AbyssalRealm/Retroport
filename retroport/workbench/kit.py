@@ -36,6 +36,7 @@ import time
 from dataclasses import asdict, dataclass, field
 
 from . import deps
+from . import kitlocal as KL
 
 HELPER_SETTINGS = os.path.join(os.path.expanduser("~"), ".wxl-equip-plus", "helper.json")
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -171,6 +172,7 @@ class Job:
     started: float = field(default_factory=time.time)
     ended: float = 0.0
     step: str = ""
+    done: list = field(default_factory=list)   # the steps this job has passed (or found passed), in order
 
 
 class Kit:
@@ -370,7 +372,10 @@ class Kit:
                 "last_install": last, "next_line": self.first + len(self.lines), "selected": self.selected(),
                 "equip_plus": {"installed": self.equip_plus_installed(), "wanted": self.equip_plus_wanted()},
                 # the basket as it is: built (Install only copies), and in the client already
-                "built": built, "installed": bool(built and last and packed and last["time"] >= packed)}
+                "built": built, "installed": bool(built and last and packed and last["time"] >= packed),
+                # the kit's measurements: needed once the selection holds something worn on the body
+                "measure": {"needed": KL.wears_on_body(self.selection()) if self.cfg.work else False,
+                            "done": KL.measured(self.cfg.work) if self.cfg.work else False}}
 
     def set_settings(self, values: dict) -> None:
         for k, v in values.items():
@@ -544,15 +549,20 @@ class Kit:
             self.job.step = "create"
             if not self.create():
                 return False
+            self.job.done.append("create")
         if self.selected_matches(basket, args):
             self.say("The kit's selection is this basket already.")
         elif not self.select(basket, args):
             return False
+        self.job.done.append("select")
         if not self.build(then="install"):
             return False
         if self.hooks.get("built") and not self.hooks["built"](self):
             return False
-        return self.install()
+        if not self.install():
+            return False
+        self.job.done.append("install")
+        return True
 
     def scan(self) -> bool:
         """The kit's scan, with its own installed patch out of Data meanwhile (it must read the client
@@ -584,15 +594,19 @@ class Kit:
         if rerun == "scan" or not self.ledger().get("scan", {}).get("ok"):
             if not self.scan():
                 return False
+        self.job.done.append("scan")
         again = STEPS[STEPS.index(rerun):] if rerun in STEPS else []
         for step in STEPS:
             if self.job.state != "running":
                 return False
-            if self.ledger().get(step, {}).get("ok") and step not in again:
+            if self.ledger().get(step, {}).get("ok") and step not in again and \
+                    not (step == "measure" and self.needs_measure()):
+                self.job.done.append(step)
                 continue
             if not self.step(step) and not (step == "newtech" and self.learn() and self.step(step)):
                 self.say(f"!! {step} did not pass - its log: {os.path.join(self.cfg.work, 'logs', step + '.log')}")
                 return False
+            self.job.done.append(step)
             if step == "tables" and self.hooks.get("tables") and not self.hooks["tables"](self):
                 return False
         self.say("Built." if then else f"Built - its preview pictures are in {os.path.join(self.cfg.work, 'sheets')}.")
@@ -626,6 +640,14 @@ class Kit:
         passed = bool(self.ledger().get("audit", {}).get("ok"))
         fails = [] if passed else grouped((g, m) for g, ms in (rep.get("fails") or {}).items() for m in ms)
         return {"warnings": warnings, "fails": fails}
+
+    def selection(self) -> dict:
+        return _load_json(os.path.join(self.cfg.work, "selection.json"), {}) or {}
+
+    def needs_measure(self) -> bool:
+        """The selection holds something worn on the body and the client isn't measured yet (kitlocal
+        let the measure step pass without measuring while there was nothing to measure for)."""
+        return KL.wears_on_body(self.selection()) and not KL.measured(self.cfg.work)
 
     def step(self, step: str) -> bool:
         """One of the kit's steps, passed (its ledger says so)."""

@@ -248,3 +248,10 @@ def test_every_value_stays_inside_its_azerothcore_column():
     assert "`SellPrice` = 4294967295" in sql and "`BuyPrice` = 2147483647" in sql
     assert "`MaxDurability` = 65535" in sql and "`stat_value1` = 3000" in sql and "`delay` = 1500" in sql
     assert I.column_value("Quality", 9) == 7 and I.column_value("name", "'x'") == "'x'"
+
+
+def test_levels_quality_and_binding_are_for_every_piece_only():
+    kit = {900001: {"entry": 900001, "class": 4, "subclass": 1, "InventoryType": 1, "name": "Hood"}}
+    edits = {"global": {"ilvl": 277, "quality": 4}, "pieces": {"5": {"ilvl": 264, "quality": 3, "stats": [[7, 10]]}}, "sets": []}
+    sql = I.updates(edits, {"item": {"5": 900001}}, kit, {})[0]
+    assert "`ItemLevel` = 277" in sql and "`Quality` = 4" in sql

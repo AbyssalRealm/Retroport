@@ -37,6 +37,9 @@ what the workbench gives it:
   thousands of files no one had made ("C1/C2 closure ... .anim missing");
 * the build plan forgets displays the selection no longer has (a piece taken out of the basket):
   the audit checked every display the plan ever held and wanted their files;
+* its ``measure`` (helm placement and body geosets, minutes the first time) waits until the
+  selection holds something worn on the body: weapons need neither - until then it passes with
+  nothing measured, and the workbench runs it when a selection needs it (``Kit.needs_measure``);
 * a helm that sits a little off a client body (the audit's "P1 placement": its centroid more than
   12 cm from retail's, say on a ported race whose body isn't retail's) is a warning - "P1
   placement (warning)" in the audit's notes - not a failure that stops the install. prove-gates
@@ -347,6 +350,32 @@ def plan_follows_selection(build_mod, bpcore) -> None:
     build_mod.run = _run
 
 
+WEAPON_SLOTS = {"mainhand", "offhand", "ranged", "held"}        # the kit's: nothing worn on the body
+
+
+def wears_on_body(selection: dict) -> bool:
+    """Whether a selection holds a piece worn on the body (a helm, armour, a cloak, shoulders) - what
+    the kit's measurements are for; weapons, shields and off-hands need neither."""
+    return any((d or {}).get("slot") not in WEAPON_SLOTS for d in ((selection or {}).get("displays") or {}).values())
+
+
+def measured(work: str) -> bool:
+    """Whether the kit measured this project's client (helm placement and body geosets)."""
+    return all(os.path.isfile(os.path.join(work, "client", n)) for n in ("helm_shift.json", "geoset_map.json"))
+
+
+def measure_when_worn(measure, bpcore) -> None:
+    """The kit's measure only for a selection with something worn on the body (see the module doc)."""
+    run = measure.run
+
+    def _run(prj, log, only=None, *a, **k):
+        if not only and not wears_on_body(bpcore.load_json(prj.path("selection.json"), {}) or {}):
+            log("kitlocal: nothing selected is worn on the body (weapons only) - measuring waits until something is")
+            return 0
+        return run(prj, log, only, *a, **k)
+    measure.run = _run
+
+
 PLACEMENT, PLACEMENT_WARNING = "P1 placement", "P1 placement (warning)"
 
 
@@ -515,6 +544,8 @@ def main(argv: list[str] | None = None) -> int:
         plan_follows_selection(kit_build, bpcore)
         import gates
         placement_warns(gates)
+        import measure
+        measure_when_worn(measure, bpcore)
     except ImportError:
         pass
     if kit_args[:1] == ["prove-gates"] and "--work" in kit_args:

@@ -7,23 +7,28 @@ server - in one click, with a backup of everything it changes and an Undo.
 ## What it does
 
 - **Browse** all of retail's items (about 99,000) and transmog sets (about 5,000). Search by name or
-  id; filter by slot, armour or weapon type, expansion, quality and class. A set comes as one card
+  id (the box at the start of the filters); filter by slot, armor or weapon type, expansion, quality
+  and class. A set comes as one card
   with all its versions (Normal, Heroic, Mythic, a PvP season's Gladiator and Elite), and items your
   client already has are marked.
 - **See it in 3D** before you port it, animated, with its glows and moving textures: an item on its
   own, a set dressed on a character of any race your client plays (male or female), weapons and
   other one-kind sets one at a time with ◀ ▶. Every version is a click away under the preview.
-- **Collect** what you like in the **Basket**. It shows exactly what will be built - every look each
-  entry brings, entries that overlap, and what's new or removed since your last install - so a
-  mistake is easy to spot and remove (with Undo).
-- **Give them stats** in **Stats**: item level, required level, quality, armour type, which classes
-  may wear them, binding, stats, armour, weapon damage and speed, sockets and socket bonus,
-  durability, price - for every piece at once or one by one, while the piece's in-game tooltip shows
-  the result as you go. *Fill in* uses WotLK's own rules (its stat budget for the item level and slot,
-  split the way real WotLK items of the role split it, with armour, damage and durability as real
-  WotLK items have them), or copy any real WotLK item's numbers. **Item sets** with set bonuses too:
+- **Collect** what you like in the **Basket** - what the next install adds to your game. It shows
+  every look each entry brings and the entries that overlap, so a mistake is easy to spot and remove
+  (with Undo). Below it: what's **in your game** from earlier installs (every install keeps it; *take
+  out* removes it at the next one), and **History** - your last five installs, each with *Put back in
+  the basket*.
+- **Give them stats** in **Stats** - every piece in the basket and in your game: item level, required
+  level, quality, binding and armor type for every piece; armor type, the role its stats are for,
+  which classes may wear it, stats, armor, weapon damage and speed, sockets and socket bonus,
+  durability, price and *Unique* piece by piece - its in-game tooltip, and the piece in 3D under it,
+  show the result as you go. *Fill in* uses WotLK's own rules (its stat budget for the item level and
+  slot, split the way real WotLK items of the role split it, with armor, damage and durability as
+  real WotLK items have them), or copy any real WotLK item's numbers. **Item sets** with set bonuses too:
   the bonuses come from your client's own item sets, with their in-game text.
-- **Install** with one button. It converts the basket for your client, installs the patch, adds the
+- **Install** with one button, on the **Backport** page. It converts the basket for your client and
+  adds it to what's in your game, installs the patch, adds the
   new items to your server's `Item.dbc` and `ItemDisplayInfo.dbc`, backs up everything it replaces,
   and can undo the whole install. It never touches your database: it shows the item SQL for you to
   apply.
@@ -48,7 +53,7 @@ server - in one click, with a backup of everything it changes and an Undo.
   The first Install also downloads the two programs that do the conversion from their authors'
   GitHub pages (see [Credits](#credits)).
 - **A 3.3.5a client** - a stock one works: it shows ported weapons, shields, helms, shoulders and
-  every other slot's armour drawn on the body. *Optional:* the extra 3D pieces modern armour adds -
+  every other slot's armor drawn on the body. *Optional:* the extra 3D pieces modern armor adds -
   skirts, collars, boot shells, belt buckles, 3D capes - need
   [WarcraftXL](https://github.com/WarcraftXL/wxl-core) and
   [Equip Plus](https://github.com/TheDaveCalaz/wxl-equip-plus) in your client. Install adds them when
@@ -84,9 +89,11 @@ down.
 ## How Install works
 
 1. The first time, it downloads the conversion kit and Equip Plus's tools.
-2. It converts the basket - only what changed since the last build. Progress is ticked off step by
-   step, and a step that fails stops it before anything is installed (the log says why).
-3. It applies the Stats step: the items' stats into the item SQL, a changed armour type into the
+2. It converts what's in your game and the basket - only what changed since the last build. Each
+   install ticks its steps off as it goes, from a clear list, and a step that fails stops it before
+   anything is installed (the log says why). Measuring how helms sit on your client's bodies (a few
+   minutes, once per client) waits until something worn on the body is in the basket.
+3. It applies the Stats step: the items' stats into the item SQL, a changed armor type into the
    client's and server's item tables, the item sets into their ItemSet tables.
 4. It installs: the patch (and Equip Plus's pieces, when your client has Equip Plus) into your
    client's `Data` folder, the new rows into your server's DBCs, and clears the client's cache.
@@ -94,8 +101,11 @@ down.
 5. You apply the item SQL it shows (`retroport-items.sql`: a `SOURCE` line with a copy button) to
    your world database, and restart the worldserver.
 
-**Undo last install** puts back everything that install replaced and removes what it added. The
-basket remembers what's installed, so the next Install adds what's new and drops what you removed.
+When it worked, the basket empties - what it held is in your game now - and the install goes into
+the History (a failed one too, with the step it stopped at).
+
+**Undo last install** puts back everything that install replaced and removes what it added (its
+basket stays in the History).
 
 **Coming from the Backport Helper?** The Workbench uses the same conversion project, and an Install
 builds exactly what's in the basket. Looks the project built before - with the Backport Helper -
@@ -168,7 +178,7 @@ Retroport Workbench is a front end to other people's work:
 
 - **[wow-retail-backport](https://github.com/Kirazul/wow-retail-backport)** by **Kirazul** - the kit
   that converts retail items for 3.3.5a: everything Install builds.
-- **[Equip Plus](https://github.com/TheDaveCalaz/wxl-equip-plus)** by **TheDaveCalaz** - the 3D armour
+- **[Equip Plus](https://github.com/TheDaveCalaz/wxl-equip-plus)** by **TheDaveCalaz** - the 3D armor
   pieces, and the tools that prepare them and merge the server's DBCs.
 - **[WarcraftXL](https://github.com/WarcraftXL/wxl-core)** - the client framework Equip Plus runs on.
 - **[wotlkconv (Converter)](https://github.com/Bar3b0n3s/Converter)** by the Converter contributors -

@@ -78,24 +78,30 @@ from the cache) - every item with a look and a search name (89,490 in BfA 8.3.7,
 (Normal/Heroic/Mythic, a PvP set's seasons) and the classic item sets. A partial local retail
 install fetches what it doesn't store from Blizzard's CDN, verified and kept in the cache.
 
-- **Items**: search by name or by item, appearance or display id; filter by slot, armour or weapon
+- **Items**: search by name or by item, appearance or display id; filter by slot, armor or weapon
   type, expansion, quality, class; *one per look* folds items that share an appearance. Items your
   3.3.5 client already has (same id) are marked; Blizzard's test items are hidden unless asked.
 - **Sets & collections**: one card per family with its pieces (a class set names its class: one PvP
   name covers a Hunter's, a Shaman's and an Evoker's looks); the detail lists every version and
-  piece, one per look - items that look the same (a Helm and a Faceguard for two armour types) under
+  piece, one per look - items that look the same (a Helm and a Faceguard for two armor types) under
   the one the set marks primary, "+1 same look". A set that is only a fragment of another of the
   same name - no version label or group, every look of it in the other (retail sells a PvP season's
   Elite looks two slots at a time as their own sets) - is folded into that one (717 in retail
   12.1.5; still found by id). Ids are the game's own - the ones the retail backport kit's
   `select --set/--item` takes.
-- **Basket**: kept in the workbench folder; what the next Install builds, to look over first. Each
-  entry shows the looks it brings as the kit selects them - one per model: a set's pieces, every
-  version of an item (an item set: of each of its items) - and opens in the drawer from its name or
-  any look; one whose looks all come with another entry already says so, one that shares some
-  says with which. Against the install in your client (the basket it was made from is recorded in
-  its `install.json`) each entry is *new* or *installed*, and what was removed since is listed with
-  *put back*. × removes (with Undo); Empty the basket empties it.
+- **Basket**: kept in the workbench folder; what the next Install adds to the game, to look over
+  first. Each entry shows the looks it brings as the kit selects them - one per model: a set's
+  pieces, every version of an item (an item set: of each of its items) - and opens in the drawer from
+  its name or any look; one whose looks all come with another entry already says so, one that shares
+  some says with which. × removes (with Undo); Empty the basket empties it.
+- **In your game**: installs add up. What Install builds (`Workbench.install_list`) is what the last
+  install put in the game - the entries recorded in its `install.json`, kept by every install - minus
+  what's marked *take out* (`<project>\workbench-take-out.json`), then the basket; a basket entry
+  stands for the game's entry of the same key (a piece left out of something installed copies its
+  entry into the basket). An install that worked takes what it installed out of the basket and
+  clears the take-outs; every install, worked or not, goes into `<data>\basket-history.json` (the
+  last five: when, the result and the step it stopped at, the basket, what was taken out) - the
+  Basket's *History*, each with *Put back in the basket*.
 - **Preview** (in an item's panel, at the top, its versions under it beside the race and sex -
   Normal / Heroic / Mythic, a PvP piece's Gladiator / Elite, named by the set that uses them, one
   per look - each a click away; a set's versions sit there too): its models
@@ -103,8 +109,8 @@ install fetches what it doesn't store from Blizzard's CDN, verified and kept in 
   their Stand animation - bones, scrolling and turning textures, colour and transparency tracks,
   particle emitters - for a race and sex of the ones your 3.3.5 client plays (helms and shoulders
   differ; a race without its own model wears ChrRaces' fallback race's: a Nightborne the Night
-  Elf's; heritage armour made for one race shows as theirs, and says so). A piece with no model -
-  a cloth cloak (ModelType 5: its texture on the body's cape), armour drawn on the body - shows on
+  Elf's; heritage armor made for one race shows as theirs, and says so). A piece with no model -
+  a cloth cloak (ModelType 5: its texture on the body's cape), armor drawn on the body - shows on
   a character wearing only it, a cloak from behind. Each batch is drawn with the client's
   own combiner for its shader id (the table for 0x8000 ids, the bits for older ones): how its up
   to three textures mix - a glow added over an environment map, a pattern moving under a mask -
@@ -112,7 +118,7 @@ install fetches what it doesn't store from Blizzard's CDN, verified and kept in 
   held item stands up facing you: weapons and shields are modelled from the grip along +X, so +X
   goes up (an axe's head, a staff's crown, a shield's top) and you face the flat side (a shield's
   front is +Y; one modelled leaning, as it sits on the forearm, has its long axis stood up); guns,
-  bows and crossbows stay level. Armour drawn on the body shows its section textures. Icons and
+  bows and crossbows stay level. Armor drawn on the body shows its section textures. Icons and
   textures a source can't open (BfA 8.3.7 keeps its last sets' art encrypted) come from the other
   source.
 - **A set of one kind** - weapons, masks, cloaks, shoulders - shows its pieces one at a time in that
@@ -161,19 +167,23 @@ install's own tables don't (2 of ParticleColor's 2,122 rows at 12.1.5).
 
 The kit makes every look a cosmetic copy (its SQL says so: *any class, any race, level 1, no stats*),
 one item per retail display id (`ids.json` maps display -> entry). The Stats page
-(`static/stats.js`) gives each piece its game values, kept in `<data>/item-stats.json`: values set
-*for every piece* (`global`) apply unless a piece sets its own; stats, armour, damage, durability
-and price are stored per piece as numbers.
+(`static/stats.js`) gives each piece - of the basket and of what's in the game - its game values,
+kept in `<data>/item-stats.json`: item level, required level, quality and binding are *for every
+piece* (`global`) only; armor type and the role the stats are for are for every piece unless a
+piece sets its own; classes are each piece's own; stats, armor, damage, durability and price are
+stored per piece as numbers. (An earlier version's every-piece classes, and a piece's own levels,
+quality and binding, are tidied into that when the page loads.) The piece's model is shown under its
+tooltip - the workbench's one viewer, which moves there from the item panel.
 
 - **Fill in** follows WotLK's rules, from `retroport/workbench/wotlk.py` - Wrath Classic's tables
   (3.4.5.63697) on wago.tools, cached as one reference: the stat budget (`RandPropPoints`, by item
   level, quality and slot group), weapon damage per second (`ItemDamageOneHand`, `TwoHand`,
-  `Ranged`, `Wand` and the caster tables), and armour, durability, speed and sell price as the real
+  `Ranged`, `Wand` and the caster tables), and armor, durability, speed and sell price as the real
   items of the same class, subclass, slot and quality have them (the median at each item level, a
   curve to interpolate). Stats are the budget split the way real items of the role split it, in
   WotLK's costs (a point of Stamina 2/3, attack power 1/2, spell power 6/7; the 1.5-power sum):
   an item-level-264 leather chest comes out Agility 159, Stamina 156, attack power 184 and two ratings
-  at 104/92, armour 665, durability 120 - Sanctified Shadowblade Breastplate has 162, 162, 184,
+  at 104/92, armor 665, durability 120 - Sanctified Shadowblade Breastplate has 162, 162, 184,
   108/92, 665, 120. Caster weapons carry their power as spell power (2.41 x the slot-0 budget: 741
   at 264, as Frozen Bonespike and Nibelung). A piece filled in follows its level, quality, type
   and role as they change, until a number is edited by hand.
@@ -184,7 +194,7 @@ and price are stored per piece as numbers.
   or any spell by id. **Socket bonuses** are the enchantments real WotLK items use as one.
 
 Right after the kit writes its item tables (`Kit.hooks["tables"]`, so the SQL is there even when a
-later step stops) and again after its steps (`Kit.hooks["built"]`): a piece whose armour type changed
+later step stops) and again after its steps (`Kit.hooks["built"]`): a piece whose armor type changed
 gets that subclass and material in the kit's `out/dbc/Item.dbc` (from the kit's own values, so it's
 idempotent; after the steps, the kit packs again when the table changed); `out/sql/retroport-items.sql`
 is the kit's SQL followed by one `UPDATE item_template` per piece - the file the Backport page shows.

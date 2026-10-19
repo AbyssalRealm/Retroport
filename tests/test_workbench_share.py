@@ -230,10 +230,55 @@ def test_a_piece_left_out_is_its_entrys_other_looks_for_the_kit():
     e = plan["entries"][0]
     assert [l["display"] for l in e["looks"]] == [2] and [l["display"] for l in e["left_out"]] == [1]
     assert plan["looks"] == 1
-    wb = types.SimpleNamespace(basket=lambda: basket)
+    wb = types.SimpleNamespace(basket=lambda: basket, install_list=lambda: basket)
     assert SV.Workbench.kit_basket(wb, plan) == [{"kind": "look", "source": "retail", "id": 2, "name": "Chest"}]
     wb.kit_basket = lambda plan: SV.Workbench.kit_basket(wb, plan)
     assert SV.Workbench.kit_args(wb, plan) == ["--display", "2"]
     plan["entries"][0]["state"] = "loading"
     with pytest.raises(RuntimeError, match="loading"):
         SV.Workbench.kit_basket(wb, plan)
+
+
+def _workbench(tmp_path, last=None):
+    """The part of a Workbench that keeps the basket, what's in the game and the history."""
+    work, data = tmp_path / "work", tmp_path / "data"
+    work.mkdir(exist_ok=True)
+    data.mkdir(exist_ok=True)
+    wb = types.SimpleNamespace(basket_path=str(data / "basket.json"), settings=types.SimpleNamespace(data_dir=str(data)),
+                               kit=types.SimpleNamespace(cfg=types.SimpleNamespace(work=str(work)), job=K.Job("go"),
+                                                         last_install=lambda: last))
+    for name in ("basket", "save_basket", "in_game", "_take_out_path", "take_out", "set_take_out", "install_list",
+                 "history", "after_install"):
+        setattr(wb, name, types.MethodType(getattr(SV.Workbench, name), wb))
+    return wb
+
+
+def test_an_install_adds_the_basket_to_whats_in_the_game_and_empties_it(tmp_path):
+    a = {"kind": "set", "source": "retail", "id": 1, "name": "Old set"}
+    b = {"kind": "item", "source": "retail", "id": 2, "name": "Old sword"}
+    c = {"kind": "set", "source": "retail", "id": 3, "name": "New set"}
+    wb = _workbench(tmp_path, last={"time": "20261019-111826", "basket": [a, b]})
+    wb.save_basket([c])
+    assert wb.install_list() == [a, b, c]                                 # the game's, then the basket
+    wb.set_take_out(C.entry_key(b), True)
+    assert wb.install_list() == [a, c]
+    with pytest.raises(LookupError):
+        wb.set_take_out(C.entry_key(c), True)                             # not in the game
+    wb.after_install(False, [c], [b])                                     # a failed install: kept, remembered
+    assert wb.basket() == [c] and wb.take_out() == [C.entry_key(b)]
+    assert wb.history()[0]["result"] == "failed" and wb.history()[0]["basket"] == [c]
+    wb.save_basket([c, {"kind": "item", "source": "retail", "id": 9, "name": "Added meanwhile"}])
+    wb.after_install(True, [c], [b])
+    assert [e["id"] for e in wb.basket()] == [9]                          # what was installed left the basket
+    assert wb.take_out() == [] and [h["result"] for h in wb.history()] == ["installed", "failed"]
+    for _ in range(6):
+        wb.after_install(True, [], [])
+    assert len(wb.history()) == 5                                         # the last five
+
+
+def test_a_basket_entry_stands_for_the_games_entry_of_the_same_key(tmp_path):
+    a = {"kind": "set", "source": "retail", "id": 1, "name": "Set"}
+    wb = _workbench(tmp_path, last={"time": "x", "basket": [a]})
+    left = dict(a, leave_out=["7"])
+    wb.save_basket([left])
+    assert wb.install_list() == [left]

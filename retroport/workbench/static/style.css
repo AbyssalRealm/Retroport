@@ -415,3 +415,20 @@ canvas.viewer:active { cursor: grabbing; }
 .audit-row.warn { border-left-color: var(--warn, #d0a040); }
 .audit-row pre { white-space: pre-wrap; word-break: break-all; margin: 4px 0 0; max-height: 160px; overflow: auto; }
 .left-out { margin-top: 3px; }
+
+/* the search box: first in the browse views' filter row */
+.filters .search { flex: 0 1 340px; max-width: 340px; margin-left: 0; border-radius: 6px; padding: 0 10px; }
+.filters .search input { height: 30px; }
+
+/* the basket: what's in the game, the install history */
+.basket-history .hist-row { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 0;
+                            border-top: 1px solid var(--line); }
+.basket-history .hist-row:first-of-type { border-top: 0; }
+.hist-when { min-width: 130px; }
+.hist-result.ok { color: var(--ok, #6fcf73); } .hist-result.bad { color: var(--bad); }
+.game-list .chip.out { opacity: .55; text-decoration: line-through; }
+.stats-preview { margin-top: 10px; }
+.stats-preview .viewer { width: 100%; height: 320px; }
+.sgroup .badge { margin-left: 6px; }
+
+.top .pill { margin-left: auto; }

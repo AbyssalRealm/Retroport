@@ -405,6 +405,45 @@ function appState(st) {
   $("#updated").hidden = !st.updated;
 }
 
+// what earlier installs put in the game: every install keeps it, unless it's taken out
+function renderGame(plan) {
+  const game = plan.in_game || [];
+  if (!game.length) { $("#basket-game").replaceChildren(); return; }
+  const out = game.filter(e => e.take_out).length;
+  const toggle = (e, take) => el("button", {class: "copy", title: take ? "The next install takes it out of your game" :
+    "Keep it in your game", onclick: async () => {
+      try { await post("/api/basket/take-out", {key: e.key, out: take}); renderBasket(); if (S.view === "backport") loadKit(); }
+      catch (err) { toast(err.message); }
+    }}, take ? "take out" : "keep");
+  $("#basket-game").replaceChildren(el("div", {class: "panel game-list"},
+    el("h3", {}, `In your game (${game.length})`),
+    el("p", {class: "muted small"}, `What earlier installs put in${plan.installed_at ? ` (the last ${when(plan.installed_at)})` : ""}. ` +
+       "Every install keeps it" + (out ? ` - the next one takes out ${plural(out, "entry")}, struck through.` : ".")),
+    el("div", {class: "chips"}, game.map(e => el("span", {class: "chip" + (e.take_out ? " out" : ""), title: e.sub || ""},
+      icon(e.icon || (e.looks[0] || {}).icon, e.quality, "xs", e.source), e.name, " ", toggle(e, !e.take_out))))));
+}
+
+// the last five installs, tried or done, each with what its basket held
+function renderHistory(history) {
+  const btn = $("#basket-history-btn");
+  btn.textContent = history.length ? `History (${history.length})` : "History";
+  const rows = history.map(h => {
+    const ok = h.result === "installed";
+    const back = h.basket.filter(e => !inBasket(keyOf(e)));
+    return el("div", {class: "hist-row"},
+      el("span", {class: "hist-when"}, when(h.time)),
+      el("span", {class: "hist-result " + (ok ? "ok" : "bad")}, ok ? "✓ installed" :
+         h.result === "stopped" ? "stopped" : `✗ failed${h.step ? ` at "${stepWords(h.step)}"` : ""}`),
+      el("span", {class: "chips"}, h.basket.map(e => el("span", {class: "chip"}, e.name)),
+         (h.taken_out || []).map(e => el("span", {class: "chip out", title: "taken out of the game"}, e.name))),
+      back.length ? el("button", {class: "btn ghost small-btn", onclick: () => {
+        S.basket.push(...back); saveBasket(); toast(`${plural(back.length, "entry")} back in the basket`);
+      }}, "Put back in the basket") : null);
+  });
+  $("#basket-history").replaceChildren(el("h3", {}, "History - the last five installs"),
+    ...(rows.length ? rows : [el("div", {class: "muted small"}, "No install yet.")]));
+}
+
 // the basket as the server has it now (it changed there: a piece left out or put back)
 async function refreshBasket() {
   try { S.basket = await api("/api/basket"); } catch (e) { return; }
@@ -423,22 +462,12 @@ async function renderBasket() {
   if (token !== S.planToken) return;
   const n = plan.entries.length;
   $("#basket-clear").disabled = !n;
-  $("#basket-go").disabled = !n;
   $("#basket-summary").textContent = n
     ? `${basketCounts(plan.entries)}: ${plural(plan.looks, "look")} from ${plural(plan.items, "item")}. ` +
-      "This is what Install builds - remove anything you don't want." : "";
-  const changes = [];
-  if (plan.known) {
-    const added = plan.entries.filter(e => e.new).length;
-    changes.push(el("div", {}, `Your client has the basket installed ${when(plan.installed_at)}. `,
-      added || plan.removed.length ? `Since then: ${added} new, ${plan.removed.length} removed.` : "Nothing has changed since."));
-    if (plan.removed.length) changes.push(el("div", {class: "removed"}, "Not in the basket any more (the next install drops them): ",
-      plan.removed.map(r => el("span", {class: "chip"}, r.name,
-        el("button", {class: "copy", title: "Put it back in the basket", onclick: () => { S.basket.push(r); saveBasket(); }}, "put back")))));
-  } else if (plan.installed_at) {
-    changes.push(el("div", {}, `The last install (${when(plan.installed_at)}) came from before the basket was tracked.`));
-  }
-  $("#basket-changes").replaceChildren(...(changes.length ? [el("div", {class: "panel changes"}, changes)] : []));
+      "The next install adds these to your game - remove anything you don't want, then give them stats." :
+    "The next install adds what you put here to your game.";
+  renderGame(plan);
+  renderHistory(plan.history || []);
   renderForeign();
   if (!n) {
     $("#basket-list").replaceChildren(el("div", {class: "empty"}, "Nothing picked yet. Use + on any item or set."));
@@ -474,9 +503,8 @@ async function renderForeign() {
 }
 function basketRow(e, plan) {
   const looks = e.looks;
-  const status = !plan.known ? null : e.new
-    ? el("span", {class: "badge new", title: "Not in your client yet: the next install adds it"}, "new")
-    : el("span", {class: "badge dim", title: `In your client since ${when(plan.installed_at)}`}, "installed");
+  const status = e.in_game ? el("span", {class: "badge dim", title: "In your game already: the next install builds it again " +
+                                                   "with what you changed (pieces left out, say)"}, "in your game") : null;
   const what = e.state === "loading" ? "loading its catalog…" : e.state === "missing" ? `not found in ${sourceLabel(e.source)}` :
     [e.kind !== "itemset" ? e.sub : "", plural(looks.length, "look"), e.items > 1 ? plural(e.items, "item") : ""].filter(Boolean).join(" · ");
   const warn = e.covered ? `Everything in it comes with ${e.shares.join(", ")} already - it adds nothing.`
@@ -602,14 +630,14 @@ function renderSettings() {
        " The kit reads retail from my install when its project's build matches"),
     (() => {
       const found = v.checks.equip_plus;
-      return el("div", {class: "field"}, el("span", {class: "flabel"}, "3D armour pieces (Equip Plus)"),
+      return el("div", {class: "field"}, el("span", {class: "flabel"}, "3D armor pieces (Equip Plus)"),
         el("span", {class: "frow"}, el("select", {id: "st-equip_plus"},
           [["auto", "When my client has Equip Plus"], ["on", "Always"], ["off", "Never"]].map(([val, label]) =>
             el("option", {value: val, selected: (k.equip_plus || "auto") === val}, label)))),
         found ? el("span", {class: "fcheck " + (found[0] ? "ok" : "warn")}, (found[0] ? "✓ " : "! ") + found[1]) : null);
     })(),
     el("label", {class: "check"}, el("input", {type: "checkbox", id: "st-armor_pieces", checked: k.armor_pieces}),
-       " Equip Plus: HD-skinned armour pieces too"),
+       " Equip Plus: HD-skinned armor pieces too"),
     (() => {
       const ep = v.equip_plus;
       if (!ep || !ep.installed) return el("div", {class: "fhint muted"},
@@ -693,15 +721,22 @@ function stepWords(step) {
 }
 function renderKit() {
   const st = K.status, c = st.settings, running = kitRunning(), j = st.job;
-  const n = S.basket.length, last = st.last_install;
+  const pl = st.plan || {basket: S.basket.length, adds: S.basket.length, in_game: 0, take_out: 0, builds: S.basket.length};
+  const n = pl.builds, last = st.last_install;
 
   // what Install does now
-  const state = !n ? "" : st.installed ? "Your client has this basket already." :
+  const parts = [pl.adds ? `adds ${plural(pl.adds, "entry")} from the basket` : "",
+                 pl.basket - pl.adds ? `changes ${pl.basket - pl.adds}` : "",
+                 pl.take_out ? `takes out ${pl.take_out}` : "",
+                 pl.in_game - pl.take_out - (pl.basket - pl.adds) > 0 ? `keeps ${pl.in_game - pl.take_out - (pl.basket - pl.adds)} in your game` : ""]
+    .filter(Boolean);
+  const state = !n ? "" : st.installed ? "Your client has all of it already." :
     st.built ? "Built - Install puts it in." :
-    last ? "It changed since the last install - Install builds what's new." : "Install builds it, then puts it in.";
+    last ? "Install builds what's new, then puts it in." : "Install builds it, then puts it in.";
   $("#k-what").replaceChildren(
-    el("div", {class: "install-line"}, n ? `The basket: ${basketCounts(S.basket)}.` : "The basket is empty - add items or sets first."),
-    el("div", {class: "muted"}, state, n ? " " : "",
+    el("div", {class: "install-line"}, !n ? "The basket is empty - add items or sets first." :
+       parts.length ? `Install ${parts.join(", ")}.` : "Install builds what's in your game again."),
+    el("div", {class: "muted"}, state, " ",
       el("a", {href: "#", onclick: ev => { ev.preventDefault(); show("basket"); }}, n ? "Review the basket" : "Go to the basket")));
   const toSettings = text => el("a", {href: "#", onclick: ev => { ev.preventDefault(); show("settings"); }}, text);
   $("#k-where").replaceChildren(
@@ -734,8 +769,8 @@ function renderKit() {
   $("#k-undo").disabled = running || !last;
   $("#k-build").disabled = running || !st.project || !n;
 
-  // progress: the job's steps, ticked from the kit's ledger
-  const done = s => (st.steps.find(x => x.step === s) || {}).ok;
+  // progress: the job's steps, each ticked as this job passes it (a new install starts them all clear)
+  const done = s => (j && j.done || []).includes(s);
   if (j && (j.name === "go" || j.name === "build" || j.name.startsWith("rerun"))) {
     const go = j.name === "go";
     const rows = [...(go && (!st.project || j.step === "create") ? [["create", "Create the kit's project"]] : []),
@@ -743,9 +778,11 @@ function renderKit() {
                   ...(go ? [["install", "Put the patch in your client" + (c.server_dbc ? " and the items on your server" : "")]] : [])];
     const cur = rows.findIndex(([s]) => s === j.step);
     $("#k-progress").replaceChildren(el("div", {class: "steps"}, rows.map(([s, words], i) => {
-      const ok = s === "install" ? st.installed || (j.state === "ok" && j.name === "go") : s === "create" ? !!st.project : done(s);
+      const ok = done(s);
       const mark = running && i === cur ? ["run", "…"] : !running && j.state !== "ok" && i === cur ? ["bad", "✗"] : ok ? ["ok", "✓"] : ["", "•"];
-      return el("div", {class: "srow"}, el("span", {class: mark[0]}, mark[1]), el("span", {}, words));
+      const idle = s === "measure" && st.measure && !st.measure.needed && !st.measure.done;
+      return el("div", {class: "srow"}, el("span", {class: mark[0]}, mark[1]), el("span", {}, words,
+        idle ? el("span", {class: "muted"}, " - not needed for weapons") : null));
     })));
   } else $("#k-progress").replaceChildren();
 
@@ -799,7 +836,9 @@ function wireKit() {
   $("#k-stop").addEventListener("click", () => kitRun("stop"));
   $("#k-go").addEventListener("click", () => {
     const c = K.status.settings;
-    if (confirm(`Install the basket (${basketCounts(S.basket)}) into your client:\n${c.client_data}\n` +
+    const pl = K.status.plan || {};
+    if (confirm(`Install into your client - ${pl.adds ? `adding ${plural(pl.adds, "entry")} from the basket` : "the basket"}` +
+                `${pl.take_out ? `, taking out ${pl.take_out}` : ""}${pl.in_game ? ", keeping the rest of your game" : ""}:\n${c.client_data}\n` +
                 (c.server_dbc ? `\nand add its items to the server's dbc files:\n${c.server_dbc}\n` :
                                 "\nThe server's dbc folder isn't set, so the server is left alone.\n") +
                 "\nIt builds what changed first (that can take a while), backs up everything it replaces " +
@@ -811,7 +850,11 @@ function wireKit() {
     if (l && confirm(`Undo the install of ${when(l.time)}? It puts back ${[...l.client, ...l.server].join(", ") || "nothing"} ` +
                      `and removes ${l.added.length} added file(s).`)) kitRun("undo");
   });
-  $("#basket-go").addEventListener("click", () => show("backport"));
+  $("#basket-history-btn").addEventListener("click", ev => {
+    const h = $("#basket-history");
+    h.hidden = !h.hidden;
+    ev.currentTarget.setAttribute("aria-expanded", String(!h.hidden));
+  });
   $("#basket-clear").addEventListener("click", () => {
     if (S.basket.length && confirm(`Take all ${S.basket.length} entries out of the basket?`))
       removeEntries(S.basket.map(keyOf), "everything");
@@ -888,9 +931,9 @@ function versionChips(list) {
 }
 
 // One display: its models alone; with none, the piece on a character (a cloak seen from behind).
-function loadDisplay(pb, display, slot) {
+function loadDisplay(pb, display, slot, from = null) {
   pb.load(async () => {
-    const v = pb.v, token = ++PV.token, source = S.source;
+    const v = pb.v, token = ++PV.token, source = from || S.source;
     pb.info.textContent = "Loading…";
     try {
       const p = await api("/api/preview", {source, display, race: PV.race, sex: PV.sex});
@@ -898,7 +941,7 @@ function loadDisplay(pb, display, slot) {
       pb.textures.replaceChildren(...p.body.map(textureThumb(source)));
       const cape = slot === BACK && p.row && p.row.model_types[0] === CAPE && p.row.materials[0];
       if (!p.models.length && (cape || p.body.length)) {
-        const got = await dress(v, [{display, slot}], token);
+        const got = await dress(v, [{display, slot}], token, source);
         if (!got) return;
         v.fit(cape ? "back" : "front");
         v.draw();
@@ -1021,8 +1064,8 @@ async function compositeSkin(body, outfit, source) {
 }
 // The viewer dressed: the race's body, its skin composited, then each piece's geosets and models.
 // pieces: [{display, slot, name?}]. Returns what it drew, or null when a newer load took over.
-async function dress(v, pieces, token) {
-  const source = S.source, race = PV.race, sex = PV.sex;
+async function dress(v, pieces, token, from = null) {
+  const source = from || S.source, race = PV.race, sex = PV.sex;
   const [body, outfit] = await Promise.all([bodyOf(race, sex),
     api("/api/outfit", {source, race, sex, items: pieces.map(p => `${p.display}:${p.slot}`).join(",")})]);
   if (token !== PV.token) return null;
@@ -1071,10 +1114,19 @@ function characterSection(pieces) {
 }
 
 // ---------------------------------------------------------------------------- views & wiring
+const BROWSE = ["items", "sets"];
 function show(view) {
   S.view = view;
   $$(".nav[data-view]").forEach(b => b.classList.toggle("on", b.dataset.view === view));
   $$(".view").forEach(v => v.hidden = v.id !== `view-${view}`);
+  const open = document.body.classList.contains("drawer-open");
+  if (!BROWSE.includes(view) && open) {             // the 3D preview waits while you're elsewhere
+    S.reopen = S.open; closeDrawer();
+  } else if (BROWSE.includes(view) && !open && S.reopen) {
+    const o = S.reopen; S.reopen = null;
+    o.kind === "item" ? openItem(o.id) : openSet(o.id, o.kind === "itemset" ? "itemset" : "transmog");
+  }
+  if (BROWSE.includes(view)) $(view === "sets" ? "#set-filters" : "#item-filters").prepend($(".search"));
   if (view === "basket") renderBasket();
   if (view === "backport") loadKit();
   if (view === "settings") openSettings();
@@ -1100,7 +1152,7 @@ async function init() {
   $("#basket-count").textContent = S.basket.length;
 
   const run = debounce(() => (S.view === "sets" ? searchSets(true) : searchItems(true)), 250);
-  $("#q").addEventListener("input", () => { if (S.view === "basket") show("items"); run(); });
+  $("#q").addEventListener("input", run);
   $("#q").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); S.view === "sets" ? searchSets(true) : searchItems(true); } });
   $$("#item-filters select, #item-filters input").forEach(c => c.addEventListener("change", () => searchItems(true)));
   $$("#set-filters select").forEach(c => c.addEventListener("change", () => searchSets(true)));
@@ -1119,14 +1171,18 @@ async function init() {
   const auto = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting && !e.target.hidden) e.target.click(); }),
                                         {root: $("#main"), rootMargin: "400px"});
   auto.observe($("#item-more")); auto.observe($("#set-more"));
-  $("#drawer-close").addEventListener("click", closeDrawer);
+  $("#drawer-close").addEventListener("click", () => { S.reopen = null; closeDrawer(); });
   document.addEventListener("keydown", e => {
     if (e.key === "Escape") closeDrawer();
     if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && PV.step && document.body.classList.contains("drawer-open") &&
         !["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) {
       e.preventDefault(); PV.step(e.key === "ArrowLeft" ? -1 : 1);
     }
-    if (e.key === "/" && document.activeElement !== $("#q")) { e.preventDefault(); $("#q").focus(); }
+    if (e.key === "/" && document.activeElement !== $("#q") && !["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName)) {
+      e.preventDefault();
+      if (!BROWSE.includes(S.view)) show("items");
+      $("#q").focus();
+    }
   });
   wireKit();
   loadKit();
