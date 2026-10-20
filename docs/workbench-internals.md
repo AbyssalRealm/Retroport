@@ -38,6 +38,15 @@ has finished; started again while it runs, it opens another window on it. Its lo
     per-race helm and the audit wanted thousands nobody had made: "C1/C2 closure ... .anim missing");
   * the build plan forgets displays no longer selected (the audit checked every display the plan
     ever held);
+  * its `tables` step numbers items and displays around every id any of the workbench's projects
+    ever gave (`--ids <data>\item-ids.json`, `retroport/workbench/itemids.py`): the kit only skips
+    the ids its scanned client tables still hold, so a look taken out - or installed by another
+    project, whose patch the new one's tables replace - left its numbers free for another look,
+    while the server and players' bags kept the old item (a new project gave Dread Gladiator's
+    weapons the numbers an earlier one had given Embered Guise of the Wight). Now no new look gets
+    another's id, and a look that comes back gets its first ids again where no row of the client
+    and no other look of the project has them. The workbench adds a project's `ids.json` to the
+    registry after each tables step;
   * a helm that sits a little off a client body ("P1 placement") is a note, `P1 placement
     (warning)`, not a failure - prove-gates' own audit runs in a process of its own, unwrapped, so
     its planted misplaced helm is still caught;
@@ -82,7 +91,13 @@ install fetches what it doesn't store from Blizzard's CDN, verified and kept in 
   type, expansion, quality, class; *one per look* folds items that share an appearance. Items your
   3.3.5 client already has (same id) are marked; Blizzard's test items are hidden unless asked.
 - **Sets & collections**: one card per family with its pieces (a class set names its class: one PvP
-  name covers a Hunter's, a Shaman's and an Evoker's looks); the detail lists every version and
+  name covers a Hunter's, a Shaman's and an Evoker's looks). Retail lists some sets once per colour
+  without linking them as versions (Aquatic, Azure, Brick... Sweatsuit; Prowler's Pink, Plum...
+  Headgear): `catalog.fold_variants` makes three or more sets of no family of their own, named alike
+  but for one colour word (`COLOR_WORDS` - another word is another set: a race's heritage armor, a
+  season's plate), with the same slots and expansion, one family - the colour each one's label, the
+  card named without it. The card of the family whose set is open stays marked whichever version is
+  shown (`data-root`); the detail lists every version and
   piece, one per look - items that look the same (a Helm and a Faceguard for two armor types) under
   the one the set marks primary, "+1 same look". A set that is only a fragment of another of the
   same name - no version label or group, every look of it in the other (retail sells a PvP season's
@@ -121,10 +136,16 @@ install fetches what it doesn't store from Blizzard's CDN, verified and kept in 
   and whether each reads the first UVs, the second or the environment. Shoulders sit as worn; a
   held item stands up facing you: weapons and shields are modelled from the grip along +X, so +X
   goes up (an axe's head, a staff's crown, a shield's top) and you face the flat side (a shield's
-  front is +Y; one modelled leaning, as it sits on the forearm, has its long axis stood up); a shield
-  or off-hand modelled along Z instead (Shadowlands' PvP ones: Dread Gladiator's Barrier, Reprieve)
-  has Z stood up - a shield's +Z end on top, an off-hand's far end from the grip; guns, bows and
-  crossbows stay level. A held piece shown by itself has no race and sex to pick. A model's batches
+  front is +Y; one modelled leaning, as it sits on the forearm, has its long axis stood up - the long
+  axis of what it draws, each triangle weighted by its area, so a kite shield's chains and ribbons
+  don't outweigh its face); a shield
+  or off-hand modelled along Z instead (Shadowlands' PvP ones, lanterns: Dread Gladiator's Barrier,
+  Reprieve, Galactic Warmonger's Lantern) has +Z up - a shield's top, the grip an off-hand hangs
+  from; guns, bows and crossbows stay level. A texture animation moves the coordinates, not the
+  texture: the first UVs by the batch's first transform, the second UVs by its second, an
+  environment map by none (two textures on the first UVs move together - Venomous Aspirant's
+  Chopper's leaves keep still while its glow, on the second UVs, scrolls). A held piece shown by itself has no race and sex to pick. A see-through batch
+  isn't drawn until its texture is loaded (without it, it would be a solid grey card). A model's batches
   are drawn as the client draws them, by priority plane, lowest first (a hood's glowing eyes,
   priority 4, over its dark inside, priority 0). Armor drawn on the body shows its section textures. Icons and
   textures a source can't open (BfA 8.3.7 keeps its last sets' art encrypted) come from the other
@@ -206,7 +227,8 @@ later step stops) and again after its steps (`Kit.hooks["built"]`): a piece whos
 gets that subclass and material in the kit's `out/dbc/Item.dbc` (from the kit's own values, so it's
 idempotent; after the steps, the kit packs again when the table changed); `out/sql/retroport-items.sql`
 is the kit's SQL followed by one `UPDATE item_template` per piece - the file the Backport page shows.
-The UPDATEs are AzerothCore's columns (it has no `StatsCount`: it counts the stats it loads), each
+A look the kit named after another retail item that shares it gets the name the Basket and Stats
+show (`Workbench.look_names`; a name typed on the Stats page wins). The UPDATEs are AzerothCore's columns (it has no `StatsCount`: it counts the stats it loads), each
 value kept inside its column's range (`itemstats.LIMITS`; `BuyPrice` as the int32 the worldserver
 reads it as) - MySQL refuses a whole UPDATE with one value out of range, and the piece would stay
 the kit's level-1 copy. After

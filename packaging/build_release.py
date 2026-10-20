@@ -192,7 +192,16 @@ def main() -> int:
         return 0
     ver = version()
     dest = os.path.join(a.out, NAME)
-    shutil.rmtree(dest, ignore_errors=True)
+    if os.path.exists(dest):
+        # moved aside whole first: a folder a running copy of the workbench holds open can't be, and a
+        # delete would take what it could and leave that copy half gone
+        old = dest + ".old"
+        shutil.rmtree(old, ignore_errors=True)
+        try:
+            os.rename(dest, old)
+        except OSError:
+            raise SystemExit(f"{dest} is in use - close the Retroport Workbench running from it, then build again")
+        shutil.rmtree(old, ignore_errors=True)
     os.makedirs(dest)
     say(f"Building {NAME} {ver} in {dest}")
     say("runtime:")

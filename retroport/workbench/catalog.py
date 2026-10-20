@@ -209,6 +209,7 @@ class Catalog:
     in_client: set[int] = field(default_factory=set)    # item ids the 3.3.5 client already has
 
     def __post_init__(self):
+        fold_variants(self.sets)
         self.by_id = {r[0]: r for r in self.items}
         self.set_by_id = {s["id"]: s for s in self.sets}
         self.item_set_by_id = {s["id"]: s for s in self.item_sets}
@@ -340,6 +341,8 @@ class Catalog:
         out = []
         for s in hits[page * per:(page + 1) * per]:
             d = self.set_summary(s)
+            if families and s.get("family_name"):
+                d["name"] = s["family_name"]                 # one set in many colours: the card is all of them
             d["piece_icons"] = [p["icon"] for p in looks_of(s["pieces"])][:12]
             d["variants"] = sum(1 for o in self.sets if o["root"] == s["root"] and not o.get("covered_by")) \
                 if families else 1
@@ -623,6 +626,51 @@ def build_catalog(src: Source, log: Callable[[str], None] = lambda m: None) -> C
     log(f"{src.spec.label}: {len(items)} items, {len(sets)} transmog sets, {len(item_sets)} item sets "
         f"({time.time() - t0:.0f} s)")
     return Catalog(src.key, src.build, items, appearances, sets, item_sets)
+
+
+# words a set's colour version is named by (The War Within's dyes, and plain colours)
+COLOR_WORDS = {w.lower() for w in """Aquatic Azure Brick Camo Carrot Cloudy Crimson Deep Faded Grassy Icy Lively Midnight
+    Pink Plum Rosy Sepia Snowy Sunny Violet Red Blue Green Yellow Black White Purple Orange Gold Golden Silver Bronze
+    Copper Dark Light Teal Brown Gray Grey Cyan Magenta Scarlet Emerald Sapphire Ruby Amber Ivory Ebony Jade Indigo
+    Lavender Maroon Navy Olive Rose Tan Turquoise Umber Verdant Vermilion Cerulean Cobalt Crimsonic Onyx Pearl
+    Obsidian Platinum Sable Slate Bright Pale Rusty Mossy Sandy Stormy Fiery Frosty Shadowy Dusky""".split()}
+
+
+def fold_variants(sets: list[dict]) -> None:
+    """Sets that are one set in other colours but aren't linked as its versions (Aquatic, Azure,
+    Brick... Sweatsuit; Prowler's Aquatic, Azure... Headgear): one family each, its root the first
+    of them, each set's label the word that differs, ``family_name`` the name without it (the
+    card's). Only sets of no family and no label of their own, three or more with the same name
+    but for one word - a colour (``COLOR_WORDS``: another word is another set, a race's heritage
+    armour or a season's plate) - the same slots and the same expansion. Running it again changes
+    nothing."""
+    in_family = {s["root"] for s in sets if s["root"] != s["id"]}
+    alone = [s for s in sets if s["root"] == s["id"] and s["id"] not in in_family and not s["label"]
+             and not s.get("covered_by") and s["pieces"]]
+
+    def keys(s):
+        words = s["name"].split()
+        sig = (s["expansion"], tuple(sorted({p["slot"] for p in s["pieces"]})))
+        return [(" ".join(words[:i] + ["*"] + words[i + 1:]), sig, i) for i in range(len(words))
+                if words[i].lower().strip(",:") in COLOR_WORDS] if len(words) > 1 else []
+    count: dict = defaultdict(int)
+    for s in alone:
+        for k, sig, _i in keys(s):
+            count[(k, sig)] += 1
+    groups: dict = defaultdict(list)
+    for s in alone:
+        best = max(keys(s), key=lambda t: (count[(t[0], t[1])], t[2]), default=None)
+        if best and count[(best[0], best[1])] >= 3:
+            groups[(best[0], best[1])].append((s, s["name"].split()[best[2]]))
+    for (pattern, _sig), members in groups.items():
+        if len(members) < 3:
+            continue
+        members.sort(key=lambda m: (m[0]["ui_order"], m[0]["id"]))
+        root, name = members[0][0]["id"], " ".join(w for w in pattern.split() if w != "*")
+        seen: dict = defaultdict(int)
+        for s, word in members:
+            seen[word] += 1                                  # two sets in one colour: Snowy, Snowy 2
+            s.update(root=root, label=word if seen[word] == 1 else f"{word} {seen[word]}", family_name=name)
 
 
 def fold_fragments(sets: list[dict]) -> None:

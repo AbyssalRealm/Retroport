@@ -9,8 +9,9 @@ server - in one click, with a backup of everything it changes and an Undo.
 - **Browse** all of retail's items (about 99,000) and transmog sets (about 5,000). Search by name or
   id (the box at the start of the filters); filter by slot, armor or weapon type, expansion, quality
   and class. A set comes as one card
-  with all its versions (Normal, Heroic, Mythic, a PvP season's Gladiator and Elite), and items your
-  client already has are marked.
+  with all its versions (Normal, Heroic, Mythic, a PvP season's Gladiator and Elite - and the colours
+  of sets retail lists one per colour, like the 18 Sweatsuits), and items your client already has
+  are marked.
 - **See it in 3D** before you port it, animated, with its glows and moving textures: an item on its
   own, a set dressed on a character of any race your client plays (male or female), weapons and
   other one-kind sets one at a time with ◀ ▶. Every version is a click away under the preview.
@@ -145,6 +146,11 @@ game) next to its *better fit* options. Your client needs Equip Plus 1.3.0 or ne
 - **The item SQL fails** - it's written for AzerothCore's world database. Install again after
   updating: older versions wrote a `StatsCount` column AzerothCore doesn't have, and a sell price can
   no longer go past what the column holds (429,496 gold).
+- **Items ported before show a red question mark** - before 0.3.0 each install replaced what the
+  last one put in, so earlier baskets' items lost their looks in the client while the server and
+  your bags kept them; and a new project could give their numbers to other items. Put those sets in
+  the basket again and Install: the Workbench now remembers every number any of your projects gave
+  and gives a returning look its old numbers, so the items you carry show again.
 - **Items are level 1 with no stats** - the conversion makes cosmetic copies; give them stats in
   **Stats** and Install again (the Backport page says how many pieces still have none).
 - **No 3D preview** - the preview needs WebGL 2; update your graphics driver.

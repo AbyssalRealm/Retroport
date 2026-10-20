@@ -480,3 +480,59 @@ def test_each_install_ticks_its_own_steps_and_measures_when_armor_comes(tmp_path
     kit.job = K.Job("build")
     assert kit.build() and ran == ["measure"] and kit.job.done == ["scan", *K.STEPS]
     assert kit.status()["measure"] == {"needed": True, "done": True}
+
+
+# -- ids across projects ------------------------------------------------------------------------
+def test_no_two_looks_get_one_id_and_a_returning_look_gets_its_own_back(tmp_path):
+    from retroport.workbench import itemids as IDS
+    reg = str(tmp_path / "item-ids.json")
+    assert IDS.remember(reg, {"item": {"748728": 900033, "710295": 900123}, "display": {"748728": 226000, "710295": 226090}}, "old")
+    assert IDS.remember(reg, {"item": {"166565": 900033}, "display": {"166565": 227000}}, "new")    # the clash, as it happened
+    assert not IDS.remember(reg, {"item": {"166565": 900033}, "display": {"166565": 227000}}, "new")
+    r = IDS.load(reg)
+    assert r["item"]["748728"] == 900033 and r["item"]["166565"] == 900033 and r["projects"] == ["old", "new"]
+    ids = {"item": {"166565": 900033}, "display": {"166565": 227000}}
+    # 710295 comes back with its ids; 748728's entry is this project's now, so it gets none
+    assert IDS.give_back(r, ids, ["710295", "748728"], base_items=set(), base_displays=set()) == 3
+    assert ids["item"] == {"166565": 900033, "710295": 900123} and ids["display"]["748728"] == 226000
+    assert IDS.give_back(r, {"item": {}, "display": {}}, ["710295"], base_items={900123}, base_displays=set()) == 1  # in the client already
+    assert IDS.reserved_for(r, ids)["item"] == set()                                     # every id used is its own
+    assert IDS.reserved_for(r, {"item": {}, "display": {}})["item"] == {900033, 900123}
+
+
+def test_the_kits_tables_number_around_every_projects_ids(tmp_path):
+    import types
+    from retroport.workbench import itemids as IDS
+    reg = str(tmp_path / "item-ids.json")
+    IDS.remember(reg, {"item": {"5": 900000, "6": 900001}, "display": {"5": 1000, "6": 1001}}, "old")
+    (tmp_path / "build").mkdir()
+    (tmp_path / "ids.json").write_text(json.dumps({"item": {}, "display": {}, "helmvis": {}}))
+    (tmp_path / "build" / "plan.json").write_text(json.dumps({"6": {"ok": True}, "7": {"ok": True}}))
+
+    class Table:
+        def __init__(self, ids):
+            self._ids = ids
+
+        def ids(self):
+            return set(self._ids)
+    seen = {}
+
+    def run(prj, log):                                  # the kit's: what its tables would give
+        ids = json.load(open(prj.path("ids.json")))
+        taken = tables._dbc(prj, "Item").ids()
+        n = 900000
+        while n in taken or n in ids["item"].values():
+            n += 1
+        seen.update(ids=ids, new_item=n, other=tables._dbc(prj, "ItemSubClass").ids())
+        return 0
+    tables = types.SimpleNamespace(run=run, _dbc=lambda prj, name: Table({1} if name == "ItemSubClass" else set()))
+    bpcore = types.SimpleNamespace(load_json=lambda p, d=None: json.load(open(p)) if os.path.isfile(p) else d,
+                                   save_json=lambda p, o: open(p, "w").write(json.dumps(o)))
+    prj = types.SimpleNamespace(path=lambda *parts: os.path.join(str(tmp_path), *parts))
+    said = []
+    L.ids_across_projects(tables, bpcore, reg)
+    assert tables.run(prj, said.append) == 0
+    assert seen["ids"]["item"] == {"6": 900001} and seen["ids"]["display"] == {"6": 1001}   # look 6 came back
+    assert seen["new_item"] == 900002                  # look 7: past 900000, which another look had
+    assert seen["other"] == {1} and "given back" in said[0]
+    assert tables._dbc(prj, "Item").ids() == set()     # the kit's own again afterwards

@@ -450,16 +450,21 @@ class Viewer {
     return any ? [lo, hi] : null;
   }
 
-  // the covariance of what the parts draw (bind pose), weighted by use in triangles
+  // the covariance of what the parts draw (bind pose), each triangle weighted by its area: a shield's
+  // face counts, not the many small triangles of its chains or ribbons
   drawnCovariance() {
     let n = 0;
     const s = [0, 0, 0], ss = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    const at = (p, i) => { const v = p.indices[i] * 3; return [p.positions[v], p.positions[v + 1], p.positions[v + 2]]; };
     for (const p of this.parts) for (const b of p.batches) {
       if (b.missing || !p.visible(b.geoset)) continue;
-      for (let i = b.start; i < b.start + b.count; i++) {
-        const v = p.indices[i] * 3, x = [p.positions[v], p.positions[v + 1], p.positions[v + 2]];
-        for (let a = 0; a < 3; a++) { s[a] += x[a]; for (let c = 0; c < 3; c++) ss[a][c] += x[a] * x[c]; }
-        n++;
+      for (let i = b.start; i + 2 < b.start + b.count; i += 3) {
+        const A = at(p, i), B = at(p, i + 1), C = at(p, i + 2);
+        const u = [B[0] - A[0], B[1] - A[1], B[2] - A[2]], w = [C[0] - A[0], C[1] - A[1], C[2] - A[2]];
+        const area = 0.5 * Math.hypot(...cross(u, w));
+        const x = [0, 1, 2].map(a => (A[a] + B[a] + C[a]) / 3);
+        for (let a = 0; a < 3; a++) { s[a] += area * x[a]; for (let c = 0; c < 3; c++) ss[a][c] += area * x[a] * x[c]; }
+        n += area;
       }
     }
     n = n || 1;
@@ -469,8 +474,8 @@ class Viewer {
   // A held item stood up: weapons and shields are modelled from the grip at the origin along +X (an
   // axe's head, a staff's crown, a shield's top), so +X goes up, and you face the flat side - the
   // thinner of Y and Z (a shield's front is +Y). Guns, bows and crossbows stay level, barrel along
-  // the screen. Some shields and off-hands (Shadowlands' PvP ones) are modelled along Z instead:
-  // their long side stands up - a shield's +Z end on top, an off-hand's far end from the grip.
+  // the screen. Some shields and off-hands (Shadowlands' PvP ones, lanterns) are modelled along Z
+  // instead: their long side stands up, +Z on top.
   orientHeld(slot) {
     let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
     for (const p of this.parts) {
@@ -495,9 +500,10 @@ class Viewer {
         up = axis;                                     // a shield modelled leaning, as it sits on the arm: its +X end on top
       } else if (ratio > 1.2 && Math.abs(th) > Math.PI / 4) {
         // modelled along the other axis: that axis up (the model's own, square to its face - horns or
-        // spikes sticking out don't tilt it), the end on top a shield's +Z, an off-hand's far end from the grip
+        // spikes sticking out don't tilt it), its + end on top: a shield's top, the grip of an off-hand
+        // that hangs from the hand (a lantern from its handle, a skull totem from its cord)
         up = [0, 0, 0];
-        up[o2] = slot === 14 ? 1 : (hi[o2] >= -lo[o2] ? 1 : -1);
+        up[o2] = 1;
       }                                                // a round shield keeps +X up
     }
     const right = cross(up, f);
@@ -726,6 +732,9 @@ class Viewer {
           gl.uniform1i(this.u.uPremul, mode === 7 ? 1 : 0);
           gl.uniform4fv(this.u.uTint, tint);
           const t = b.tex && b.tex.ready ? b.tex : null;
+          // a see-through batch waits for its texture: drawn without one it's a solid card (a mantle's
+          // light rays as two grey slabs while their texture loads - or forever, when it can't)
+          if (!t && blended) continue;
           gl.uniform1i(this.u.uHasTex, t ? 1 : 0);
           if (t) this.bindTexture(gl.TEXTURE0, t, b.wrap);
           // the combiner, or the first texture alone while one of the others is missing or loading
@@ -737,9 +746,15 @@ class Viewer {
           gl.uniform1i(this.u.uEdge, sh.edge ? 1 : 0);
           const layers = b.layers || [], wt = i => i >= 0 && p.weights[i] !== undefined ? p.weights[i] : 1;
           gl.uniform3f(this.u.uWgt, wt(b.weight), wt(layers[0] ? layers[0].weight : -1), wt(layers[1] ? layers[1].weight : -1));
-          gl.uniformMatrix4fv(this.u.uUvMat, false, uvMat(p, b.uvanim));
-          gl.uniformMatrix4fv(this.u.uUv2Mat, false, uvMat(p, layers[0] ? layers[0].uvanim : -1));
-          gl.uniformMatrix4fv(this.u.uUv3Mat, false, uvMat(p, layers[1] ? layers[1].uvanim : -1));
+          // a texture animation belongs to the coordinates, not the texture: the first UVs move by the
+          // batch's first transform, the second UVs by its second, an environment map by none - so two
+          // textures on the first UVs move together (a weapon's leaves don't slide a second texture sheet
+          // across themselves because the batch's next transform scrolls a glow elsewhere)
+          const m0 = uvMat(p, b.uvanim), m1 = uvMat(p, layers[0] ? layers[0].uvanim : -1);
+          const matOf = c => c === U1 ? m0 : c === U2 ? m1 : IDENT;
+          gl.uniformMatrix4fv(this.u.uUvMat, false, matOf(sh.coords[0]));
+          gl.uniformMatrix4fv(this.u.uUv2Mat, false, matOf(sh.coords[1] ?? U1));
+          gl.uniformMatrix4fv(this.u.uUv3Mat, false, matOf(sh.coords[2] ?? U1));
           if (full) b.extra.forEach((x, i) => this.bindTexture(i ? gl.TEXTURE3 : gl.TEXTURE2, x, layers[i].wrap));
           gl.uniform1f(this.u.uAlphaRef, b.blend === 1 ? 0.5 : (b.blend >= 2 ? 0.004 : -1));
           gl.uniform1i(this.u.uUnlit, b.unlit ? 1 : 0);

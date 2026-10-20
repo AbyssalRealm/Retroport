@@ -40,6 +40,10 @@ what the workbench gives it:
 * its ``measure`` (helm placement and body geosets, minutes the first time) waits until the
   selection holds something worn on the body: weapons need neither - until then it passes with
   nothing measured, and the workbench runs it when a selection needs it (``Kit.needs_measure``);
+* its ``tables`` step numbers items and displays around every id the workbench's projects ever
+  gave (``--ids``, ``itemids``): a look that comes back gets its old ids again where they're free,
+  and no new look gets another's - the kit only skips the ids its client tables still hold, so a
+  look taken out (or installed by an older project) could have its numbers given to another;
 * a helm that sits a little off a client body (the audit's "P1 placement": its centroid more than
   12 cm from retail's, say on a ported race whose body isn't retail's) is a warning - "P1
   placement (warning)" in the audit's notes - not a failure that stops the install. prove-gates
@@ -350,6 +354,45 @@ def plan_follows_selection(build_mod, bpcore) -> None:
     build_mod.run = _run
 
 
+def ids_across_projects(tables, bpcore, registry: str) -> None:
+    """The kit's tables step with every project's ids (see the module doc)."""
+    from . import itemids
+    run, dbc = tables.run, tables._dbc
+
+    def _run(prj, log, *a, **k):
+        reg = itemids.load(registry)
+        path = prj.path("ids.json")
+        ids = bpcore.load_json(path, None) or {"display": {}, "item": {}, "helmvis": {}}
+        plan = bpcore.load_json(prj.path("build", "plan.json"), {}) or {}
+        looks = [d for d, p in plan.items() if (p or {}).get("ok")]
+        got = itemids.give_back(reg, ids, looks, dbc(prj, "Item").ids(), dbc(prj, "ItemDisplayInfo").ids())
+        if got:
+            bpcore.save_json(path, ids)
+            log(f"kitlocal: {got} id(s) given back to looks that had them before")
+        reserved = itemids.reserved_for(reg, ids)
+
+        class _Reserved:
+            def __init__(self, table, extra):
+                self._t, self._extra = table, extra
+
+            def __getattr__(self, name):
+                return getattr(self._t, name)
+
+            def ids(self):
+                return self._t.ids() | self._extra
+
+        def _dbc(prj_, name):
+            t = dbc(prj_, name)
+            extra = reserved["item"] if name == "Item" else reserved["display"] if name == "ItemDisplayInfo" else None
+            return _Reserved(t, extra) if extra else t
+        tables._dbc = _dbc
+        try:
+            return run(prj, log, *a, **k)
+        finally:
+            tables._dbc = dbc
+    tables.run = _run
+
+
 WEAPON_SLOTS = {"mainhand", "offhand", "ranged", "held"}        # the kit's: nothing worn on the body
 
 
@@ -516,6 +559,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dbd", default="")
     ap.add_argument("--listfile", default="")
     ap.add_argument("--cache", default=os.path.join(os.path.expanduser("~"), ".retroport", "workbench", "cache"))
+    ap.add_argument("--ids", default="", help="the workbench's ids of every project (itemids)")
     a = ap.parse_args(argv[:cut])
     kit_args = argv[cut + 1:]
 
@@ -546,6 +590,9 @@ def main(argv: list[str] | None = None) -> int:
         placement_warns(gates)
         import measure
         measure_when_worn(measure, bpcore)
+        if a.ids:
+            import tables as kit_tables
+            ids_across_projects(kit_tables, bpcore, a.ids)
     except ImportError:
         pass
     if kit_args[:1] == ["prove-gates"] and "--work" in kit_args:

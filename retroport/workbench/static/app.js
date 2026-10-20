@@ -222,7 +222,7 @@ function setCard(s) {
   const few = s.classes && Object.keys(S.meta.classes).filter(c => s.classes & (1 << (c - 1))).length <= 3;
   const sub = kind === "itemset" ? `${s.pieces} pieces · ${SHORT_EXP[s.expansion] || ""}` :
     [s.label, few ? classNames(s.classes) : "", s.group, SHORT_EXP[s.expansion]].filter(Boolean).join(" · ");
-  return el("div", {class: "card set-card", "data-id": s.id, onclick: () => openSet(s.id, kind)},
+  return el("div", {class: "card set-card", "data-id": s.id, "data-root": s.root ?? s.id, onclick: () => openSet(s.id, kind)},
     el("div", {class: "row"},
       el("div", {class: "meta"}, el("div", {class: "name", title: s.name}, s.name), el("div", {class: "sub"}, sub)),
       s.variants > 1 ? el("span", {class: "badge dim"}, `${s.variants} versions`) : null,
@@ -232,7 +232,7 @@ function setCard(s) {
 }
 async function openSet(id, kind = "transmog") {
   const [d] = await Promise.all([api("/api/set", {source: S.source, id, kind}), ensureRaces()]);
-  S.open = {kind: kind === "itemset" ? "itemset" : "set", id};
+  S.open = {kind: kind === "itemset" ? "itemset" : "set", id, root: d.root ?? id};   // its family's card stays marked
   PV.step = null;
   markSelected();
   const body = [];
@@ -277,12 +277,13 @@ async function openSet(id, kind = "transmog") {
   actions.push(el("a", {class: "btn ghost", target: "_blank", rel: "noopener",
     href: kind === "itemset" ? `https://www.wowhead.com/item-set=${d.id}` : `https://www.wowhead.com/transmog-set=${d.id}`},
     "Wowhead ↗"));
-  // weapons only, or pieces all of one kind (masks, cloaks): one at a time; else on a character
+  // weapons and accessories (a back piece too), or pieces all of one kind (masks, cloaks): one at a time;
+  // else on a character
   const shown = d.pieces.map((p, i) => ({display: p.display, slot: p.slot, name: p.name || `Item ${p.item ?? p.id}`, row: rows[i]}))
     .filter(p => p.display);
   const kinds = new Set(shown.map(p => SLOT_KIND[p.slot] ?? p.slot));
   let preview = null;
-  if (shown.length && (shown.every(p => HELD.includes(p.slot)) || kinds.size === 1)) {
+  if (shown.length && (shown.every(p => HELD.includes(p.slot) || p.slot === BACK) || kinds.size === 1)) {
     preview = carouselSection(shown, shown.map(p => p.row));
   } else {
     const worn = [], slots = new Set();
@@ -324,7 +325,8 @@ function markSelected() {
   $$(".card.sel").forEach(c => c.classList.remove("sel"));
   if (!S.open) return;
   const grid = S.open.kind === "item" ? "#item-grid" : "#set-grid";
-  $$(`${grid} .card[data-id="${S.open.id}"]`).forEach(c => c.classList.add("sel"));
+  const same = S.open.kind === "item" ? `[data-id="${S.open.id}"]` : `[data-root="${S.open.root ?? S.open.id}"]`;
+  $$(`${grid} .card${same}`).forEach(c => c.classList.add("sel"));
 }
 
 // ---------------------------------------------------------------------------- basket

@@ -335,9 +335,24 @@ class Workbench:
                 "basket_sets": [{"key": e["key"], "name": e["name"], "pieces": [str(l["display"]) for l in e["looks"] if l.get("display")]}
                                 for e in plan["entries"] if e["kind"] in ("set", "itemset")]}
 
+    def look_names(self) -> dict:
+        """The name each look of what Install builds has in the workbench (its first entry's): the
+        name the Basket and Stats show, which the item SQL gives it."""
+        names: dict = {}
+        for e in self.install_plan()["entries"]:
+            for look in e["looks"]:
+                d = str(look.get("display") or "")
+                if d and d != "0" and look.get("name"):
+                    names.setdefault(d, look["name"])
+        return names
+
     def _stats_tables(self, kit) -> bool:
-        """Right after the kit writes its item tables: the Stats step's part of them (the kit's pack,
-        which comes after, packs it) - so its SQL is there even when a later step stops."""
+        """Right after the kit writes its item tables: the ids it gave remembered for every project
+        (``itemids``), and the Stats step's part of the tables (the kit's pack, which comes after,
+        packs it) - so its SQL is there even when a later step stops."""
+        from . import itemids
+        ids = K._load_json(os.path.join(kit.cfg.work, "ids.json"), {}) or {}
+        itemids.remember(itemids.path(self.settings.data_dir), ids, kit.cfg.work)
         return self._stats_built(kit, pack_again=False)
 
     def _stats_built(self, kit, pack_again: bool = True) -> bool:
@@ -352,7 +367,7 @@ class Workbench:
                 if kit._run(["pack", "--work", work], step="pack") != 0 or not kit.ledger().get("pack", {}).get("ok"):
                     kit.say("!! the kit could not pack the changed item table")
                     return False
-            path = IS.write_sql(work, edits, sids)
+            path = IS.write_sql(work, edits, sids, self.look_names())
             if path:
                 n = sum(1 for line in open(path, encoding="utf-8") if line.startswith("UPDATE"))
                 kit.say(f"Stats: {n} item(s) with their stats in {path}")

@@ -160,20 +160,28 @@ def column_value(col: str, v):
     return min(max(v, lo), hi) if lo is not None and isinstance(v, int) and not isinstance(v, bool) else v
 
 
-def updates(edits: dict, ids: dict, kit: dict[int, dict], set_ids: dict) -> list[str]:
-    """One UPDATE per touched piece (the kit's row stays as it wrote it otherwise)."""
+def updates(edits: dict, ids: dict, kit: dict[int, dict], set_ids: dict, names: dict | None = None) -> list[str]:
+    """One UPDATE per touched piece (the kit's row stays as it wrote it otherwise). ``names``: the name
+    each look has in the workbench (the item the basket chose): the kit names a look after the first
+    retail item of it, which may be another one that shares it - a piece named otherwise gets the
+    workbench's name (a name typed on the Stats page wins over both)."""
     out = []
     sets = piece_sets(edits, set_ids)
     for display, entry in sorted(((str(d), e) for d, e in (ids.get("item") or {}).items()), key=lambda t: t[1]):
         row = kit.get(int(entry))
-        in_set = sets.get(display)
-        if row is None or not (touched(edits, display) or in_set):
+        if row is None:
             continue
+        in_set = sets.get(display)
         p = (edits.get("pieces") or {}).get(display, {})
+        name = p.get("name") or (names or {}).get(display)
+        renamed = bool(name) and name != row.get("name")
+        if not (touched(edits, display) or in_set):
+            if renamed:                                     # nothing else to give it: its name only
+                out.append(f"UPDATE `item_template` SET `name` = {_q(name)} WHERE `entry` = {int(entry)};")
+            continue
         cls, sub, inv = row.get("class", 0), row.get("subclass", 0), row.get("InventoryType", 0)
         set_ = {}
-        name = p.get("name")
-        if name and name != row.get("name"):
+        if renamed:
             set_["name"] = _q(name)
         for col, field in (("Quality", "quality"), ("ItemLevel", "ilvl"), ("RequiredLevel", "req"), ("bonding", "bonding")):
             v = (edits.get("global") or {}).get(field)              # for every piece only (the page sets no other)
@@ -218,14 +226,15 @@ def updates(edits: dict, ids: dict, kit: dict[int, dict], set_ids: dict) -> list
     return out
 
 
-def write_sql(work: str, edits: dict, set_ids: dict) -> str | None:
-    """``<work>/out/sql/retroport-items.sql``: the kit's item SQL, then the Stats step's UPDATEs."""
+def write_sql(work: str, edits: dict, set_ids: dict, names: dict | None = None) -> str | None:
+    """``<work>/out/sql/retroport-items.sql``: the kit's item SQL, then the Stats step's UPDATEs (and
+    the workbench's name for each look the kit named after another item - see ``updates``)."""
     kit_path = os.path.join(work, "out", "sql", "item_template.sql")
     ids = _json(os.path.join(work, "ids.json"), {})
     if not os.path.isfile(kit_path):
         return None
     text = open(kit_path, encoding="utf-8").read()
-    lines = updates(edits, ids, kit_items(text), set_ids)
+    lines = updates(edits, ids, kit_items(text), set_ids, names)
     path = os.path.join(work, "out", "sql", "retroport-items.sql")
     with open(path + ".part", "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text.rstrip() + "\n\n-- Retroport Workbench, the Stats step: levels, stats, armor, damage, sockets, "

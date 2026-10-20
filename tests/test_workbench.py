@@ -169,3 +169,24 @@ def test_the_server_answers_searches_and_keeps_the_basket(tmp_path):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+def test_one_set_in_many_colours_is_one_family():
+    from retroport.workbench import catalog as C
+    def s(i, name, slots=(5, 7), exp=10, label="", root=None):
+        return {"id": i, "name": name, "label": label, "root": root or i, "expansion": exp, "ui_order": 0,
+                "pieces": [{"slot": x} for x in slots]}
+    sets = [s(1, "Aquatic Sweatsuit"), s(2, "Azure Sweatsuit"), s(3, "Brick Sweatsuit"), s(4, "Azure Sweatsuit"),
+            s(5, "Heritage of the Dark Iron"), s(6, "Heritage of the Kul Tiran"), s(7, "Heritage of the Mag'har"),
+            s(8, "Prowler's Pink Headgear", (1,)), s(9, "Prowler's Plum Headgear", (1,)),
+            s(10, "Crimson Sweatsuit", exp=9), s(11, "Normal Thing", label="Normal"), s(12, "Snowy Thing", root=11)]
+    C.fold_variants(sets)
+    by = {x["id"]: x for x in sets}
+    assert [by[i]["root"] for i in (1, 2, 3, 4)] == [1, 1, 1, 1]
+    assert [by[i]["label"] for i in (1, 2, 3, 4)] == ["Aquatic", "Azure", "Brick", "Azure 2"]
+    assert by[1]["family_name"] == "Sweatsuit"
+    assert all(by[i]["root"] == i for i in (5, 6, 7, 8, 9, 10))          # not colours; only two; another expansion
+    assert by[12]["root"] == 11 and not by[12].get("family_name")       # a family already
+    before = [dict(x) for x in sets]
+    C.fold_variants(sets)
+    assert sets == before                                                # running it again changes nothing

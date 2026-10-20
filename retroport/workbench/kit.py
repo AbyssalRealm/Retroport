@@ -36,6 +36,7 @@ import time
 from dataclasses import asdict, dataclass, field
 
 from . import deps
+from . import itemids
 from . import kitlocal as KL
 
 HELPER_SETTINGS = os.path.join(os.path.expanduser("~"), ".wxl-equip-plus", "helper.json")
@@ -405,6 +406,8 @@ class Kit:
         client's open-folder patches shown to it either way."""
         local = self.local_ok() if local is None else local
         cmd = [python_exe(), "-u", "-m", "retroport.workbench.kitlocal", "--bp", self.cfg.bp]
+        if self.data_dir:
+            cmd += ["--ids", itemids.path(self.data_dir)]
         if local and self.retail:
             cmd += ["--retail", self.retail["path"], "--product", self.retail.get("product") or "wow",
                     "--dbd", self.dbd, "--listfile", self.listfile, "--cache", os.path.join(self.data_dir, "cache")]

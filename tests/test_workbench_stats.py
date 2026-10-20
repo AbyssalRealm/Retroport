@@ -133,6 +133,7 @@ def test_spell_text_fills_in_its_numbers():
 # -- looks the project built outside the workbench -----------------------------------------------
 def test_looks_the_backport_helper_built_are_never_dropped_unasked(tmp_path, monkeypatch):
     monkeypatch.setattr(K, "HELPER_SETTINGS", str(tmp_path / "none.json"))
+    monkeypatch.setattr(K, "wow_running", lambda: False)                  # whether you're playing as the tests run
     work = _project(tmp_path)
     kit = K.Kit({"work": str(work)}, None, "", "", str(tmp_path / "wb"))
     kit.job = K.Job("test")
@@ -255,3 +256,14 @@ def test_levels_quality_and_binding_are_for_every_piece_only():
     edits = {"global": {"ilvl": 277, "quality": 4}, "pieces": {"5": {"ilvl": 264, "quality": 3, "stats": [[7, 10]]}}, "sets": []}
     sql = I.updates(edits, {"item": {"5": 900001}}, kit, {})[0]
     assert "`ItemLevel` = 277" in sql and "`Quality` = 4" in sql
+
+
+def test_a_look_the_kit_named_after_another_item_gets_the_workbenchs_name():
+    kit = {900001: {"entry": 900001, "class": 2, "subclass": 6, "InventoryType": 17, "name": "Pike of the Banished"},
+           900002: {"entry": 900002, "class": 2, "subclass": 6, "InventoryType": 17, "name": "Same Name"}}
+    ids = {"item": {"5": 900001, "6": 900002}}
+    names = {"5": "Dread Gladiator's Pike", "6": "Same Name"}
+    sql = I.updates({"global": {}, "pieces": {}, "sets": []}, ids, kit, {}, names)
+    assert sql == ["UPDATE `item_template` SET `name` = 'Dread Gladiator''s Pike' WHERE `entry` = 900001;"]
+    own = I.updates({"global": {}, "pieces": {"5": {"name": "Mine", "stats": [[7, 10]]}}, "sets": []}, ids, kit, {}, names)
+    assert "`name` = 'Mine'" in own[0]                 # a name typed on the Stats page wins
